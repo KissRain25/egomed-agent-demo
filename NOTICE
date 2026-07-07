@@ -1,0 +1,18 @@
+EgoMed-Agent
+Copyright (c) 2026 The EgoMed-Agent Authors
+
+This product includes software developed at Meta Platforms, Inc. and affiliates:
+  Segment Anything Model 2 (SAM 2) - https://github.com/facebookresearch/sam2
+  Licensed under the Apache License, Version 2.0.
+
+The SAM 2 source code, its copyright notices, and its license are retained in
+this repository (see the LICENSE file for the full Apache-2.0 text).
+
+All additional code contributed for EgoMed-Agent - the multi-agent system for
+Interactive Egocentric Medical Image Segmentation (IEMIS), including the dataset
+construction pipeline and the Detection / Confirmation / Propagation agents - is
+released by the EgoMed-Agent Authors under the same Apache License, Version 2.0.
+
+If you use this code, please cite the accompanying paper:
+  Understanding From Human Perspective: A Multi-agent System for Interactive
+  Egocentric Medical Image Segmentation.

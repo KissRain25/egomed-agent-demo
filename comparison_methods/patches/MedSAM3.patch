@@ -1,0 +1,13 @@
+diff --git a/infer_sam.py b/infer_sam.py
+index 9f07ac7..300923d 100644
+--- a/infer_sam.py
++++ b/infer_sam.py
+@@ -110,7 +110,7 @@ class SAM3LoRAInference:
+         self.model = build_sam3_image_model(
+             device=self.device.type,
+             compile=False,
+-            load_from_HF=True,
++            checkpoint_path="<EGOMED_EXT_ROOT>/sam3/checkpoints/sam3.pt",
+             bpe_path="sam3/assets/bpe_simple_vocab_16e6.txt.gz",
+             eval_mode=True
+         )

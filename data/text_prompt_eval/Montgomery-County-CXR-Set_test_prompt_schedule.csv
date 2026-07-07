@@ -1,0 +1,97 @@
+dataset,split,case_id,case_prompt_id,prompt,prompt_type,target_class,target_gray_value,target_mode,target_classes,target_gray_values,prompt_activate_frame,activation_reason,num_case_frames
+Montgomery-County-CXR-Set,test,1,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,1,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,1,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,105,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,164
+Montgomery-County-CXR-Set,test,105,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,164
+Montgomery-County-CXR-Set,test,105,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,164
+Montgomery-County-CXR-Set,test,96,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,96,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,145
+Montgomery-County-CXR-Set,test,96,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,60,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,117
+Montgomery-County-CXR-Set,test,60,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,117
+Montgomery-County-CXR-Set,test,60,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,117
+Montgomery-County-CXR-Set,test,103,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,103,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,128
+Montgomery-County-CXR-Set,test,103,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,55,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,105
+Montgomery-County-CXR-Set,test,55,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,105
+Montgomery-County-CXR-Set,test,55,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,105
+Montgomery-County-CXR-Set,test,98,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,98,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,98,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,27,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,147
+Montgomery-County-CXR-Set,test,27,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,147
+Montgomery-County-CXR-Set,test,27,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,147
+Montgomery-County-CXR-Set,test,76,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,76,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,128
+Montgomery-County-CXR-Set,test,76,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,93,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,114
+Montgomery-County-CXR-Set,test,93,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,114
+Montgomery-County-CXR-Set,test,93,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,114
+Montgomery-County-CXR-Set,test,82,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,82,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,145
+Montgomery-County-CXR-Set,test,82,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,67,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,118
+Montgomery-County-CXR-Set,test,67,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,118
+Montgomery-County-CXR-Set,test,67,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,118
+Montgomery-County-CXR-Set,test,31,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,165
+Montgomery-County-CXR-Set,test,31,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,165
+Montgomery-County-CXR-Set,test,31,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,165
+Montgomery-County-CXR-Set,test,29,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,138
+Montgomery-County-CXR-Set,test,29,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,138
+Montgomery-County-CXR-Set,test,29,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,138
+Montgomery-County-CXR-Set,test,97,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,97,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,97,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,108,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,176
+Montgomery-County-CXR-Set,test,108,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,176
+Montgomery-County-CXR-Set,test,108,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,176
+Montgomery-County-CXR-Set,test,5,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,127
+Montgomery-County-CXR-Set,test,5,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,127
+Montgomery-County-CXR-Set,test,5,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,127
+Montgomery-County-CXR-Set,test,56,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,115
+Montgomery-County-CXR-Set,test,56,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,115
+Montgomery-County-CXR-Set,test,56,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,115
+Montgomery-County-CXR-Set,test,80,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,80,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,80,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,12,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,12,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,139
+Montgomery-County-CXR-Set,test,12,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,74,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,74,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,74,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,91,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,91,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,149
+Montgomery-County-CXR-Set,test,91,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,14,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,14,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,139
+Montgomery-County-CXR-Set,test,14,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,106,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,106,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,106,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,19,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,188
+Montgomery-County-CXR-Set,test,19,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,188
+Montgomery-County-CXR-Set,test,19,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,188
+Montgomery-County-CXR-Set,test,30,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,30,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,149
+Montgomery-County-CXR-Set,test,30,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,33,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,141
+Montgomery-County-CXR-Set,test,33,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,141
+Montgomery-County-CXR-Set,test,33,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,141
+Montgomery-County-CXR-Set,test,37,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,189
+Montgomery-County-CXR-Set,test,37,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,189
+Montgomery-County-CXR-Set,test,37,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,189
+Montgomery-County-CXR-Set,test,99,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,140
+Montgomery-County-CXR-Set,test,99,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,140
+Montgomery-County-CXR-Set,test,99,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,140
+Montgomery-County-CXR-Set,test,4,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,166
+Montgomery-County-CXR-Set,test,4,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,166
+Montgomery-County-CXR-Set,test,4,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,166
+Montgomery-County-CXR-Set,test,15,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,136
+Montgomery-County-CXR-Set,test,15,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,136
+Montgomery-County-CXR-Set,test,15,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,136
+Montgomery-County-CXR-Set,test,86,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,120
+Montgomery-County-CXR-Set,test,86,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,120
+Montgomery-County-CXR-Set,test,86,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,120

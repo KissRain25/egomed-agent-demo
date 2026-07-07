@@ -1,0 +1,72 @@
+diff --git a/chat.py b/chat.py
+index 7fbe550..bcc10d8 100755
+--- a/chat.py
++++ b/chat.py
+@@ -129,16 +129,9 @@ def main(args):
+         args.precision == "fp16" and (not args.load_in_4bit) and (not args.load_in_8bit)
+     ):
+         vision_tower = model.get_model().get_vision_tower()
+-        model.model.vision_tower = None
+-        import deepspeed
+-
+-        model_engine = deepspeed.init_inference(
+-            model=model,
+-            dtype=torch.half,
+-            replace_with_kernel_inject=True,
+-            replace_method="auto",
+-        )
+-        model = model_engine.module
++        # Single-GPU inference without DeepSpeed.
++        # DeepSpeed may require nvcc/CUDA_HOME, which is unnecessary for our evaluation.
++        model = model.half().cuda()
+         model.model.vision_tower = vision_tower.half().cuda()
+     elif args.precision == "fp32":
+         model = model.float().cuda()
+diff --git a/vis_output/blackpink.jpg b/vis_output/blackpink.jpg
+deleted file mode 100755
+index f8275bb..0000000
+Binary files a/vis_output/blackpink.jpg and /dev/null differ
+diff --git a/vis_output/camera_lens.jpg b/vis_output/camera_lens.jpg
+deleted file mode 100755
+index 408e56d..0000000
+Binary files a/vis_output/camera_lens.jpg and /dev/null differ
+diff --git a/vis_output/dog_with_horn.jpg b/vis_output/dog_with_horn.jpg
+deleted file mode 100755
+index 1063499..0000000
+Binary files a/vis_output/dog_with_horn.jpg and /dev/null differ
+diff --git a/vis_output/example1_mask_0.jpg b/vis_output/example1_mask_0.jpg
+deleted file mode 100755
+index e833663..0000000
+Binary files a/vis_output/example1_mask_0.jpg and /dev/null differ
+diff --git a/vis_output/example1_masked_img_0.jpg b/vis_output/example1_masked_img_0.jpg
+deleted file mode 100755
+index cf8b814..0000000
+Binary files a/vis_output/example1_masked_img_0.jpg and /dev/null differ
+diff --git a/vis_output/example2_mask_0.jpg b/vis_output/example2_mask_0.jpg
+deleted file mode 100755
+index 530f206..0000000
+Binary files a/vis_output/example2_mask_0.jpg and /dev/null differ
+diff --git a/vis_output/example2_masked_img_0.jpg b/vis_output/example2_masked_img_0.jpg
+deleted file mode 100755
+index e03bbf3..0000000
+Binary files a/vis_output/example2_masked_img_0.jpg and /dev/null differ
+diff --git a/vis_output/jackma.jpg b/vis_output/jackma.jpg
+deleted file mode 100755
+index 565396e..0000000
+Binary files a/vis_output/jackma.jpg and /dev/null differ
+diff --git a/vis_output/obama.jpg b/vis_output/obama.jpg
+deleted file mode 100755
+index 84d5447..0000000
+Binary files a/vis_output/obama.jpg and /dev/null differ
+diff --git a/vis_output/stand_higher.jpg b/vis_output/stand_higher.jpg
+deleted file mode 100755
+index 0c64e13..0000000
+Binary files a/vis_output/stand_higher.jpg and /dev/null differ
+diff --git a/vis_output/trump.jpg b/vis_output/trump.jpg
+deleted file mode 100755
+index df17e09..0000000
+Binary files a/vis_output/trump.jpg and /dev/null differ
+diff --git a/vis_output/wash_hands.jpg b/vis_output/wash_hands.jpg
+deleted file mode 100755
+index 0495138..0000000
+Binary files a/vis_output/wash_hands.jpg and /dev/null differ

@@ -1,0 +1,517 @@
+dataset,split,case_id,case_prompt_id,prompt,prompt_type,target_class,target_gray_value,target_mode,target_classes,target_gray_values,prompt_activate_frame,activation_reason,num_case_frames
+Amos,test,207,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,124,first_visible:left kidney,445
+Amos,test,207,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,124,first_visible:left kidney,445
+Amos,test,207,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,159,first_visible:right kidney,445
+Amos,test,207,3,segment the liver,exact,liver,6,single,liver,6,176,first_visible:liver,445
+Amos,test,207,4,segment the spleen,exact,spleen,1,single,spleen,1,241,first_visible:spleen,445
+Amos,test,207,5,segment the stomach,exact,stomach,7,single,stomach,7,410,first_visible:stomach,445
+Amos,test,90,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,90,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,62,first_visible:left kidney,443
+Amos,test,90,2,segment the liver,exact,liver,6,single,liver,6,62,first_visible:liver,443
+Amos,test,90,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,62,first_visible:left kidney,443
+Amos,test,90,4,segment the stomach,exact,stomach,7,single,stomach,7,205,first_visible:stomach,443
+Amos,test,90,5,segment the spleen,exact,spleen,1,single,spleen,1,304,first_visible:spleen,443
+Amos,test,197,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,197,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,68,first_visible:left kidney,443
+Amos,test,197,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,68,first_visible:left kidney,443
+Amos,test,197,3,segment the liver,exact,liver,6,single,liver,6,169,first_visible:liver,443
+Amos,test,197,4,segment the spleen,exact,spleen,1,single,spleen,1,195,first_visible:spleen,443
+Amos,test,197,5,segment the stomach,exact,stomach,7,single,stomach,7,281,first_visible:stomach,443
+Amos,test,133,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,133,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,444
+Amos,test,133,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,133,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,444
+Amos,test,133,4,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,444
+Amos,test,133,5,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,116,0,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,443
+Amos,test,116,1,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,443
+Amos,test,191,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,191,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,191,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,191,3,segment the liver,exact,liver,6,single,liver,6,317,first_visible:liver,443
+Amos,test,138,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,138,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,444
+Amos,test,138,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,138,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,444
+Amos,test,138,4,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,444
+Amos,test,138,5,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,186,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,445
+Amos,test,186,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,445
+Amos,test,186,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,445
+Amos,test,186,3,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,445
+Amos,test,186,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,445
+Amos,test,186,5,segment the spleen,exact,spleen,1,single,spleen,1,132,first_visible:spleen,445
+Amos,test,159,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,159,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,444
+Amos,test,159,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,159,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,444
+Amos,test,159,4,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,444
+Amos,test,159,5,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,25,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,279,first_visible:right kidney,443
+Amos,test,108,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,171,first_visible:right kidney,443
+Amos,test,108,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,188,first_visible:left kidney,443
+Amos,test,108,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,188,first_visible:left kidney,443
+Amos,test,108,3,segment the liver,exact,liver,6,single,liver,6,373,first_visible:liver,443
+Amos,test,244,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,450
+Amos,test,244,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,450
+Amos,test,244,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,450
+Amos,test,244,3,segment the liver,exact,liver,6,single,liver,6,145,first_visible:liver,450
+Amos,test,244,4,segment the spleen,exact,spleen,1,single,spleen,1,181,first_visible:spleen,450
+Amos,test,244,5,segment the stomach,exact,stomach,7,single,stomach,7,181,first_visible:stomach,450
+Amos,test,129,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,194,first_visible:right kidney,443
+Amos,test,129,1,segment the liver,exact,liver,6,single,liver,6,280,first_visible:liver,443
+Amos,test,129,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,358,first_visible:left kidney,443
+Amos,test,129,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,358,first_visible:left kidney,443
+Amos,test,129,4,segment the stomach,exact,stomach,7,single,stomach,7,397,first_visible:stomach,443
+Amos,test,132,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,132,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,443
+Amos,test,132,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,132,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,132,4,segment the spleen,exact,spleen,1,single,spleen,1,119,first_visible:spleen,443
+Amos,test,132,5,segment the stomach,exact,stomach,7,single,stomach,7,119,first_visible:stomach,443
+Amos,test,139,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,162,first_visible:right kidney,444
+Amos,test,139,1,segment the liver,exact,liver,6,single,liver,6,202,first_visible:liver,444
+Amos,test,139,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,238,first_visible:left kidney,444
+Amos,test,139,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,238,first_visible:left kidney,444
+Amos,test,139,4,segment the stomach,exact,stomach,7,single,stomach,7,273,first_visible:stomach,444
+Amos,test,139,5,segment the spleen,exact,spleen,1,single,spleen,1,408,first_visible:spleen,444
+Amos,test,261,0,segment the liver,exact,liver,6,single,liver,6,75,first_visible:liver,452
+Amos,test,261,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,75,first_visible:right kidney,452
+Amos,test,261,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,131,first_visible:left kidney,452
+Amos,test,261,3,segment the spleen,exact,spleen,1,single,spleen,1,131,first_visible:spleen,452
+Amos,test,261,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,131,first_visible:left kidney,452
+Amos,test,261,5,segment the stomach,exact,stomach,7,single,stomach,7,244,first_visible:stomach,452
+Amos,test,260,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,71,first_visible:right kidney,451
+Amos,test,260,1,segment the liver,exact,liver,6,single,liver,6,128,first_visible:liver,451
+Amos,test,260,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,151,first_visible:left kidney,451
+Amos,test,260,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,151,first_visible:left kidney,451
+Amos,test,260,4,segment the stomach,exact,stomach,7,single,stomach,7,211,first_visible:stomach,451
+Amos,test,260,5,segment the spleen,exact,spleen,1,single,spleen,1,402,first_visible:spleen,451
+Amos,test,127,0,segment the liver,exact,liver,6,single,liver,6,72,first_visible:liver,444
+Amos,test,127,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,99,first_visible:left kidney,444
+Amos,test,127,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,99,first_visible:left kidney,444
+Amos,test,127,3,segment the stomach,exact,stomach,7,single,stomach,7,126,first_visible:stomach,444
+Amos,test,127,4,segment the right kidney,exact,right kidney,2,single,right kidney,2,140,first_visible:right kidney,444
+Amos,test,127,5,segment the spleen,exact,spleen,1,single,spleen,1,261,first_visible:spleen,444
+Amos,test,248,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,130,first_visible:left kidney,452
+Amos,test,248,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,130,first_visible:right kidney,452
+Amos,test,248,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,130,first_visible:left kidney,452
+Amos,test,248,3,segment the liver,exact,liver,6,single,liver,6,207,first_visible:liver,452
+Amos,test,248,4,segment the stomach,exact,stomach,7,single,stomach,7,282,first_visible:stomach,452
+Amos,test,248,5,segment the spleen,exact,spleen,1,single,spleen,1,294,first_visible:spleen,452
+Amos,test,258,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,448
+Amos,test,258,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,448
+Amos,test,258,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,448
+Amos,test,258,3,segment the liver,exact,liver,6,single,liver,6,28,first_visible:liver,448
+Amos,test,258,4,segment the spleen,exact,spleen,1,single,spleen,1,94,first_visible:spleen,448
+Amos,test,258,5,segment the stomach,exact,stomach,7,single,stomach,7,195,first_visible:stomach,448
+Amos,test,128,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,128,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,443
+Amos,test,128,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,128,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,128,4,segment the spleen,exact,spleen,1,single,spleen,1,117,first_visible:spleen,443
+Amos,test,128,5,segment the stomach,exact,stomach,7,single,stomach,7,234,first_visible:stomach,443
+Amos,test,252,0,segment the stomach,exact,stomach,7,single,stomach,7,45,first_visible:stomach,448
+Amos,test,252,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,67,first_visible:left kidney,448
+Amos,test,252,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,67,first_visible:left kidney,448
+Amos,test,252,3,segment the right kidney,exact,right kidney,2,single,right kidney,2,103,first_visible:right kidney,448
+Amos,test,252,4,segment the spleen,exact,spleen,1,single,spleen,1,166,first_visible:spleen,448
+Amos,test,252,5,segment the liver,exact,liver,6,single,liver,6,223,first_visible:liver,448
+Amos,test,4,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,86,first_visible:right kidney,444
+Amos,test,112,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,112,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,444
+Amos,test,112,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,112,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,444
+Amos,test,112,4,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,444
+Amos,test,112,5,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,444
+Amos,test,201,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,94,first_visible:left kidney,443
+Amos,test,201,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,94,first_visible:left kidney,443
+Amos,test,201,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,142,first_visible:right kidney,443
+Amos,test,201,3,segment the liver,exact,liver,6,single,liver,6,232,first_visible:liver,443
+Amos,test,201,4,segment the spleen,exact,spleen,1,single,spleen,1,334,first_visible:spleen,443
+Amos,test,201,5,segment the stomach,exact,stomach,7,single,stomach,7,396,first_visible:stomach,443
+Amos,test,156,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,115,first_visible:right kidney,444
+Amos,test,156,1,segment the liver,exact,liver,6,single,liver,6,212,first_visible:liver,444
+Amos,test,156,2,segment the stomach,exact,stomach,7,single,stomach,7,271,first_visible:stomach,444
+Amos,test,156,3,segment the left kidney,exact,left kidney,3,single,left kidney,3,282,first_visible:left kidney,444
+Amos,test,156,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,282,first_visible:left kidney,444
+Amos,test,97,0,segment the liver,exact,liver,6,single,liver,6,55,first_visible:liver,443
+Amos,test,97,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,148,first_visible:left kidney,443
+Amos,test,97,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,148,first_visible:left kidney,443
+Amos,test,97,3,segment the right kidney,exact,right kidney,2,single,right kidney,2,178,first_visible:right kidney,443
+Amos,test,97,4,segment the stomach,exact,stomach,7,single,stomach,7,244,first_visible:stomach,443
+Amos,test,97,5,segment the spleen,exact,spleen,1,single,spleen,1,279,first_visible:spleen,443
+Amos,test,149,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,173,first_visible:left kidney,443
+Amos,test,149,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,173,first_visible:left kidney,443
+Amos,test,149,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,287,first_visible:right kidney,443
+Amos,test,149,3,segment the stomach,exact,stomach,7,single,stomach,7,287,first_visible:stomach,443
+Amos,test,256,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,91,first_visible:right kidney,449
+Amos,test,256,1,segment the liver,exact,liver,6,single,liver,6,132,first_visible:liver,449
+Amos,test,256,2,segment the stomach,exact,stomach,7,single,stomach,7,167,first_visible:stomach,449
+Amos,test,256,3,segment the left kidney,exact,left kidney,3,single,left kidney,3,194,first_visible:left kidney,449
+Amos,test,256,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,194,first_visible:left kidney,449
+Amos,test,237,0,segment the liver,exact,liver,6,single,liver,6,47,first_visible:liver,449
+Amos,test,237,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,133,first_visible:right kidney,449
+Amos,test,237,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,153,first_visible:left kidney,449
+Amos,test,237,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,153,first_visible:left kidney,449
+Amos,test,237,4,segment the spleen,exact,spleen,1,single,spleen,1,258,first_visible:spleen,449
+Amos,test,237,5,segment the stomach,exact,stomach,7,single,stomach,7,258,first_visible:stomach,449
+Amos,test,220,0,segment the liver,exact,liver,6,single,liver,6,157,first_visible:liver,442
+Amos,test,220,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,157,first_visible:right kidney,442
+Amos,test,220,2,segment the stomach,exact,stomach,7,single,stomach,7,186,first_visible:stomach,442
+Amos,test,220,3,segment the left kidney,exact,left kidney,3,single,left kidney,3,215,first_visible:left kidney,442
+Amos,test,220,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,215,first_visible:left kidney,442
+Amos,test,220,5,segment the spleen,exact,spleen,1,single,spleen,1,341,first_visible:spleen,442
+Amos,test,91,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,146,first_visible:right kidney,443
+Amos,test,91,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,182,first_visible:left kidney,443
+Amos,test,91,2,segment the stomach,exact,stomach,7,single,stomach,7,182,first_visible:stomach,443
+Amos,test,91,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,182,first_visible:left kidney,443
+Amos,test,91,4,segment the liver,exact,liver,6,single,liver,6,222,first_visible:liver,443
+Amos,test,193,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,80,first_visible:right kidney,445
+Amos,test,193,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,91,first_visible:left kidney,445
+Amos,test,193,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,91,first_visible:left kidney,445
+Amos,test,193,3,segment the liver,exact,liver,6,single,liver,6,154,first_visible:liver,445
+Amos,test,193,4,segment the spleen,exact,spleen,1,single,spleen,1,220,first_visible:spleen,445
+Amos,test,193,5,segment the stomach,exact,stomach,7,single,stomach,7,325,first_visible:stomach,445
+Amos,test,268,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,36,first_visible:right kidney,450
+Amos,test,268,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,48,first_visible:left kidney,450
+Amos,test,268,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,48,first_visible:left kidney,450
+Amos,test,268,3,segment the liver,exact,liver,6,single,liver,6,74,first_visible:liver,450
+Amos,test,268,4,segment the stomach,exact,stomach,7,single,stomach,7,123,first_visible:stomach,450
+Amos,test,268,5,segment the spleen,exact,spleen,1,single,spleen,1,139,first_visible:spleen,450
+Amos,test,205,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,37,first_visible:right kidney,443
+Amos,test,205,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,88,first_visible:left kidney,443
+Amos,test,205,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,88,first_visible:left kidney,443
+Amos,test,205,3,segment the liver,exact,liver,6,single,liver,6,179,first_visible:liver,443
+Amos,test,205,4,segment the stomach,exact,stomach,7,single,stomach,7,316,first_visible:stomach,443
+Amos,test,205,5,segment the spleen,exact,spleen,1,single,spleen,1,355,first_visible:spleen,443
+Amos,test,174,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,190,first_visible:left kidney,444
+Amos,test,174,1,segment the right kidney,exact,right kidney,2,single,right kidney,2,190,first_visible:right kidney,444
+Amos,test,174,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,190,first_visible:left kidney,444
+Amos,test,174,3,segment the stomach,exact,stomach,7,single,stomach,7,266,first_visible:stomach,444
+Amos,test,174,4,segment the liver,exact,liver,6,single,liver,6,341,first_visible:liver,444
+Amos,test,174,5,segment the spleen,exact,spleen,1,single,spleen,1,341,first_visible:spleen,444
+Amos,test,100,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,83,first_visible:left kidney,444
+Amos,test,100,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,83,first_visible:left kidney,444
+Amos,test,100,2,segment the liver,exact,liver,6,single,liver,6,159,first_visible:liver,444
+Amos,test,100,3,segment the right kidney,exact,right kidney,2,single,right kidney,2,159,first_visible:right kidney,444
+Amos,test,100,4,segment the spleen,exact,spleen,1,single,spleen,1,273,first_visible:spleen,444
+Amos,test,100,5,segment the stomach,exact,stomach,7,single,stomach,7,298,first_visible:stomach,444
+Amos,test,96,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,193,first_visible:left kidney,443
+Amos,test,96,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,193,first_visible:left kidney,443
+Amos,test,96,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,231,first_visible:right kidney,443
+Amos,test,96,3,segment the stomach,exact,stomach,7,single,stomach,7,353,first_visible:stomach,443
+Amos,test,96,4,segment the liver,exact,liver,6,single,liver,6,387,first_visible:liver,443
+Amos,test,96,5,segment the spleen,exact,spleen,1,single,spleen,1,421,first_visible:spleen,443
+Amos,test,150,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,150,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,443
+Amos,test,150,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,150,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,443
+Amos,test,150,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,150,5,segment the stomach,exact,stomach,7,single,stomach,7,249,first_visible:stomach,443
+Amos,test,202,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,214,first_visible:left kidney,443
+Amos,test,202,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,214,first_visible:left kidney,443
+Amos,test,202,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,279,first_visible:right kidney,443
+Amos,test,202,3,segment the liver,exact,liver,6,single,liver,6,408,first_visible:liver,443
+Amos,test,202,4,segment the spleen,exact,spleen,1,single,spleen,1,440,first_visible:spleen,443
+Amos,test,188,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,188,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,72,first_visible:left kidney,444
+Amos,test,188,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,72,first_visible:left kidney,444
+Amos,test,188,3,segment the stomach,exact,stomach,7,single,stomach,7,392,first_visible:stomach,444
+Amos,test,267,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,111,first_visible:right kidney,449
+Amos,test,267,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,141,first_visible:left kidney,449
+Amos,test,267,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,141,first_visible:left kidney,449
+Amos,test,267,3,segment the liver,exact,liver,6,single,liver,6,162,first_visible:liver,449
+Amos,test,267,4,segment the spleen,exact,spleen,1,single,spleen,1,202,first_visible:spleen,449
+Amos,test,267,5,segment the stomach,exact,stomach,7,single,stomach,7,238,first_visible:stomach,449
+Amos,test,229,0,segment the liver,exact,liver,6,single,liver,6,85,first_visible:liver,450
+Amos,test,229,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,94,first_visible:left kidney,450
+Amos,test,229,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,94,first_visible:right kidney,450
+Amos,test,229,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,94,first_visible:left kidney,450
+Amos,test,229,4,segment the spleen,exact,spleen,1,single,spleen,1,184,first_visible:spleen,450
+Amos,test,229,5,segment the stomach,exact,stomach,7,single,stomach,7,303,first_visible:stomach,450
+Amos,test,249,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,135,first_visible:right kidney,451
+Amos,test,249,1,segment the liver,exact,liver,6,single,liver,6,156,first_visible:liver,451
+Amos,test,249,2,segment the left kidney,exact,left kidney,3,single,left kidney,3,171,first_visible:left kidney,451
+Amos,test,249,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,171,first_visible:left kidney,451
+Amos,test,249,4,segment the spleen,exact,spleen,1,single,spleen,1,180,first_visible:spleen,451
+Amos,test,249,5,segment the stomach,exact,stomach,7,single,stomach,7,215,first_visible:stomach,451
+Amos,test,98,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,444
+Amos,test,98,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,165,first_visible:left kidney,444
+Amos,test,98,2,segment the liver,exact,liver,6,single,liver,6,165,first_visible:liver,444
+Amos,test,98,3,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,165,first_visible:left kidney,444
+Amos,test,98,4,segment the stomach,exact,stomach,7,single,stomach,7,373,first_visible:stomach,444
+Amos,test,103,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,103,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,443
+Amos,test,103,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,443
+Amos,test,103,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,443
+Amos,test,103,4,segment the stomach,exact,stomach,7,single,stomach,7,0,first_visible:stomach,443
+Amos,test,103,5,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,443
+Amos,test,111,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,0,first_visible:left kidney,445
+Amos,test,111,1,segment the liver,exact,liver,6,single,liver,6,0,first_visible:liver,445
+Amos,test,111,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,0,first_visible:right kidney,445
+Amos,test,111,3,segment the spleen,exact,spleen,1,single,spleen,1,0,first_visible:spleen,445
+Amos,test,111,4,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,0,first_visible:left kidney,445
+Amos,test,111,5,segment the stomach,exact,stomach,7,single,stomach,7,79,first_visible:stomach,445
+Amos,test,250,0,segment the right kidney,exact,right kidney,2,single,right kidney,2,70,first_visible:right kidney,452
+Amos,test,250,1,segment the left kidney,exact,left kidney,3,single,left kidney,3,81,first_visible:left kidney,452
+Amos,test,250,2,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,81,first_visible:left kidney,452
+Amos,test,250,3,segment the liver,exact,liver,6,single,liver,6,258,first_visible:liver,452
+Amos,test,250,4,segment the spleen,exact,spleen,1,single,spleen,1,301,first_visible:spleen,452
+Amos,test,250,5,segment the stomach,exact,stomach,7,single,stomach,7,344,first_visible:stomach,452
+Amos,test,214,0,segment the left kidney,exact,left kidney,3,single,left kidney,3,61,first_visible:left kidney,444
+Amos,test,214,1,segment the kidney,ambiguous,left kidney,3,single,left kidney,3,61,first_visible:left kidney,444
+Amos,test,214,2,segment the right kidney,exact,right kidney,2,single,right kidney,2,95,first_visible:right kidney,444
+Amos,test,214,3,segment the liver,exact,liver,6,single,liver,6,310,first_visible:liver,444
+Amos,test,214,4,segment the stomach,exact,stomach,7,single,stomach,7,328,first_visible:stomach,444
+Amos,test,214,5,segment the spleen,exact,spleen,1,single,spleen,1,366,first_visible:spleen,444
+CAMUS,test,27,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,361
+CAMUS,test,27,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,361
+CAMUS,test,27,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,361
+CAMUS,test,35,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,338
+CAMUS,test,35,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,338
+CAMUS,test,35,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,338
+CAMUS,test,45,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,355
+CAMUS,test,45,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,355
+CAMUS,test,45,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,355
+CAMUS,test,42,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,377
+CAMUS,test,42,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,377
+CAMUS,test,42,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,377
+CAMUS,test,46,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,300
+CAMUS,test,46,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,300
+CAMUS,test,46,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,300
+CAMUS,test,13,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,452
+CAMUS,test,13,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,452
+CAMUS,test,13,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,452
+CAMUS,test,78,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,329
+CAMUS,test,78,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,329
+CAMUS,test,78,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,329
+CAMUS,test,69,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,342
+CAMUS,test,69,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,342
+CAMUS,test,69,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,342
+CAMUS,test,65,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,449
+CAMUS,test,65,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,449
+CAMUS,test,65,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,449
+CAMUS,test,30,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,333
+CAMUS,test,30,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,333
+CAMUS,test,30,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,333
+CAMUS,test,28,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,321
+CAMUS,test,28,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,321
+CAMUS,test,28,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,321
+CAMUS,test,72,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,289
+CAMUS,test,72,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,289
+CAMUS,test,72,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,289
+CAMUS,test,79,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,428
+CAMUS,test,79,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,428
+CAMUS,test,79,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,428
+CAMUS,test,5,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,387
+CAMUS,test,5,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,387
+CAMUS,test,5,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,387
+CAMUS,test,55,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,427
+CAMUS,test,55,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,427
+CAMUS,test,55,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,427
+CAMUS,test,12,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,352
+CAMUS,test,12,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,352
+CAMUS,test,12,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,352
+CAMUS,test,70,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,401
+CAMUS,test,70,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,401
+CAMUS,test,70,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,401
+CAMUS,test,14,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,374
+CAMUS,test,14,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,374
+CAMUS,test,14,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,374
+CAMUS,test,18,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,325
+CAMUS,test,18,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,325
+CAMUS,test,18,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,325
+CAMUS,test,29,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,241
+CAMUS,test,29,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,241
+CAMUS,test,29,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,241
+CAMUS,test,32,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,275
+CAMUS,test,32,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,275
+CAMUS,test,32,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,275
+CAMUS,test,36,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,320
+CAMUS,test,36,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,320
+CAMUS,test,36,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,320
+CAMUS,test,4,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,281
+CAMUS,test,4,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,281
+CAMUS,test,4,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,281
+CAMUS,test,15,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,452
+CAMUS,test,15,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,452
+CAMUS,test,15,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,452
+ACDC,test,41,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,171
+ACDC,test,41,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,171
+ACDC,test,41,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,50,first_visible:RV cavity,171
+ACDC,test,35,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,138
+ACDC,test,35,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,138
+ACDC,test,35,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,138
+ACDC,test,72,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,123
+ACDC,test,72,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,123
+ACDC,test,72,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,50,first_visible:RV cavity,123
+ACDC,test,66,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,74,first_visible:LV cavity,150
+ACDC,test,66,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,74,first_visible:RV cavity,150
+ACDC,test,66,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,74,first_visible:myocardium,150
+ACDC,test,61,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,147
+ACDC,test,61,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,147
+ACDC,test,61,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,147
+ACDC,test,2,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,43,first_visible:LV cavity,185
+ACDC,test,2,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,43,first_visible:myocardium,185
+ACDC,test,2,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,55,first_visible:RV cavity,185
+ACDC,test,3,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,197
+ACDC,test,3,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,197
+ACDC,test,3,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,197
+ACDC,test,29,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,156
+ACDC,test,29,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,156
+ACDC,test,29,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,156
+ACDC,test,40,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,145
+ACDC,test,40,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,145
+ACDC,test,40,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,145
+ACDC,test,6,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,196
+ACDC,test,6,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,196
+ACDC,test,6,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,44,first_visible:RV cavity,196
+ACDC,test,37,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,209
+ACDC,test,37,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,209
+ACDC,test,37,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,209
+ACDC,test,60,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,70,first_visible:LV cavity,165
+ACDC,test,60,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,70,first_visible:myocardium,165
+ACDC,test,60,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,80,first_visible:RV cavity,165
+ACDC,test,50,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,152
+ACDC,test,50,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,152
+ACDC,test,50,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,79,first_visible:RV cavity,152
+ACDC,test,46,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,153
+ACDC,test,46,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,153
+ACDC,test,46,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,63,first_visible:RV cavity,153
+ACDC,test,14,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,120
+ACDC,test,14,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,120
+ACDC,test,14,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,48,first_visible:RV cavity,120
+ACDC,test,18,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,163
+ACDC,test,18,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,163
+ACDC,test,18,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,163
+ACDC,test,30,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,151
+ACDC,test,30,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,151
+ACDC,test,30,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,151
+ACDC,test,34,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,155
+ACDC,test,34,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,155
+ACDC,test,34,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,155
+ACDC,test,38,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,163
+ACDC,test,38,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,163
+ACDC,test,38,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,163
+ACDC,test,4,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,216
+ACDC,test,4,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,216
+ACDC,test,4,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,56,first_visible:RV cavity,216
+ACDC,test,15,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,130
+ACDC,test,15,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,130
+ACDC,test,15,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,130
+Montgomery-County-CXR-Set,test,1,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,1,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,1,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,105,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,164
+Montgomery-County-CXR-Set,test,105,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,164
+Montgomery-County-CXR-Set,test,105,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,164
+Montgomery-County-CXR-Set,test,96,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,96,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,145
+Montgomery-County-CXR-Set,test,96,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,60,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,117
+Montgomery-County-CXR-Set,test,60,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,117
+Montgomery-County-CXR-Set,test,60,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,117
+Montgomery-County-CXR-Set,test,103,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,103,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,128
+Montgomery-County-CXR-Set,test,103,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,55,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,105
+Montgomery-County-CXR-Set,test,55,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,105
+Montgomery-County-CXR-Set,test,55,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,105
+Montgomery-County-CXR-Set,test,98,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,98,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,98,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,27,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,147
+Montgomery-County-CXR-Set,test,27,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,147
+Montgomery-County-CXR-Set,test,27,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,147
+Montgomery-County-CXR-Set,test,76,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,76,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,128
+Montgomery-County-CXR-Set,test,76,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,128
+Montgomery-County-CXR-Set,test,93,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,114
+Montgomery-County-CXR-Set,test,93,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,114
+Montgomery-County-CXR-Set,test,93,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,114
+Montgomery-County-CXR-Set,test,82,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,82,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,145
+Montgomery-County-CXR-Set,test,82,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,145
+Montgomery-County-CXR-Set,test,67,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,118
+Montgomery-County-CXR-Set,test,67,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,118
+Montgomery-County-CXR-Set,test,67,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,118
+Montgomery-County-CXR-Set,test,31,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,165
+Montgomery-County-CXR-Set,test,31,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,165
+Montgomery-County-CXR-Set,test,31,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,165
+Montgomery-County-CXR-Set,test,29,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,138
+Montgomery-County-CXR-Set,test,29,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,138
+Montgomery-County-CXR-Set,test,29,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,138
+Montgomery-County-CXR-Set,test,97,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,97,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,142
+Montgomery-County-CXR-Set,test,97,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,142
+Montgomery-County-CXR-Set,test,108,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,176
+Montgomery-County-CXR-Set,test,108,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,176
+Montgomery-County-CXR-Set,test,108,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,176
+Montgomery-County-CXR-Set,test,5,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,127
+Montgomery-County-CXR-Set,test,5,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,127
+Montgomery-County-CXR-Set,test,5,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,127
+Montgomery-County-CXR-Set,test,56,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,115
+Montgomery-County-CXR-Set,test,56,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,115
+Montgomery-County-CXR-Set,test,56,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,115
+Montgomery-County-CXR-Set,test,80,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,80,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,80,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,12,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,12,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,139
+Montgomery-County-CXR-Set,test,12,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,74,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,74,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,74,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,91,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,91,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,149
+Montgomery-County-CXR-Set,test,91,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,14,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,14,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,139
+Montgomery-County-CXR-Set,test,14,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,139
+Montgomery-County-CXR-Set,test,106,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,106,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,130
+Montgomery-County-CXR-Set,test,106,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,130
+Montgomery-County-CXR-Set,test,19,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,188
+Montgomery-County-CXR-Set,test,19,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,188
+Montgomery-County-CXR-Set,test,19,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,188
+Montgomery-County-CXR-Set,test,30,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,30,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,149
+Montgomery-County-CXR-Set,test,30,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,149
+Montgomery-County-CXR-Set,test,33,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,141
+Montgomery-County-CXR-Set,test,33,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,141
+Montgomery-County-CXR-Set,test,33,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,141
+Montgomery-County-CXR-Set,test,37,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,189
+Montgomery-County-CXR-Set,test,37,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,189
+Montgomery-County-CXR-Set,test,37,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,189
+Montgomery-County-CXR-Set,test,99,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,140
+Montgomery-County-CXR-Set,test,99,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,140
+Montgomery-County-CXR-Set,test,99,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,140
+Montgomery-County-CXR-Set,test,4,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,166
+Montgomery-County-CXR-Set,test,4,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,166
+Montgomery-County-CXR-Set,test,4,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,166
+Montgomery-County-CXR-Set,test,15,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,136
+Montgomery-County-CXR-Set,test,15,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,136
+Montgomery-County-CXR-Set,test,15,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,136
+Montgomery-County-CXR-Set,test,86,0,segment the left lung,exact,left lung,1,single,left lung,1,0,first_visible:left lung,120
+Montgomery-County-CXR-Set,test,86,1,segment the right lung,exact,right lung,2,single,right lung,2,0,first_visible:right lung,120
+Montgomery-County-CXR-Set,test,86,2,segment the lung,ambiguous,left lung,1,single,left lung,1,0,first_visible:left lung,120
+PolypGen2021_MultiCenterData_v3,test,57,0,segment the polyp,exact,polyp,1,single,polyp,1,67,first_visible:polyp,449
+PolypGen2021_MultiCenterData_v3,test,70,0,segment the polyp,exact,polyp,1,single,polyp,1,49,first_visible:polyp,441
+PolypGen2021_MultiCenterData_v3,test,3,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,31,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,442
+PolypGen2021_MultiCenterData_v3,test,42,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,451
+PolypGen2021_MultiCenterData_v3,test,6,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,39,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,281
+PolypGen2021_MultiCenterData_v3,test,60,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,51,0,segment the polyp,exact,polyp,1,single,polyp,1,68,first_visible:polyp,450
+PolypGen2021_MultiCenterData_v3,test,7,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,69,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,384
+PolypGen2021_MultiCenterData_v3,test,9,0,segment the polyp,exact,polyp,1,single,polyp,1,204,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,15,0,segment the polyp,exact,polyp,1,single,polyp,1,49,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,16,0,segment the polyp,exact,polyp,1,single,polyp,1,281,first_visible:polyp,443
+PolypGen2021_MultiCenterData_v3,test,18,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,55,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,2,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,8,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,450
+PolypGen2021_MultiCenterData_v3,test,48,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,450

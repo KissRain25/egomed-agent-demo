@@ -1,0 +1,20 @@
+dataset,split,case_id,case_prompt_id,prompt,prompt_type,target_class,target_gray_value,target_mode,target_classes,target_gray_values,prompt_activate_frame,activation_reason,num_case_frames
+PolypGen2021_MultiCenterData_v3,test,57,0,segment the polyp,exact,polyp,1,single,polyp,1,67,first_visible:polyp,449
+PolypGen2021_MultiCenterData_v3,test,70,0,segment the polyp,exact,polyp,1,single,polyp,1,49,first_visible:polyp,441
+PolypGen2021_MultiCenterData_v3,test,3,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,31,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,442
+PolypGen2021_MultiCenterData_v3,test,42,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,451
+PolypGen2021_MultiCenterData_v3,test,6,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,39,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,281
+PolypGen2021_MultiCenterData_v3,test,60,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,51,0,segment the polyp,exact,polyp,1,single,polyp,1,68,first_visible:polyp,450
+PolypGen2021_MultiCenterData_v3,test,7,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,69,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,384
+PolypGen2021_MultiCenterData_v3,test,9,0,segment the polyp,exact,polyp,1,single,polyp,1,204,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,15,0,segment the polyp,exact,polyp,1,single,polyp,1,49,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,16,0,segment the polyp,exact,polyp,1,single,polyp,1,281,first_visible:polyp,443
+PolypGen2021_MultiCenterData_v3,test,18,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,55,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,2,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,452
+PolypGen2021_MultiCenterData_v3,test,8,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,450
+PolypGen2021_MultiCenterData_v3,test,48,0,segment the polyp,exact,polyp,1,single,polyp,1,0,first_visible:polyp,450

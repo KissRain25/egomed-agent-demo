@@ -1,0 +1,27 @@
+diff --git a/grounding_dino/setup.py b/grounding_dino/setup.py
+index 31e6ca5..93ec169 100644
+--- a/grounding_dino/setup.py
++++ b/grounding_dino/setup.py
+@@ -93,9 +93,9 @@ def get_extensions():
+             "-D__CUDA_NO_HALF_OPERATORS__",
+             "-D__CUDA_NO_HALF_CONVERSIONS__",
+             "-D__CUDA_NO_HALF2_OPERATORS__",
+-            "-gencode=arch=compute_70,code=sm_70",
+-            "-gencode=arch=compute_75,code=sm_75",
+-            "-gencode=arch=compute_80,code=sm_80",
++            
++            
++            
+             "-gencode=arch=compute_86,code=sm_86",
+         ]
+         cuda_version = None
+@@ -109,7 +109,8 @@ def get_extensions():
+             print(f"Warning: Could not detect CUDA version: {e}")
+         # sm_120: supported since CUDA 12.8 (RTX 5090, Blackwell)
+         if cuda_version is not None and cuda_version >= 12.8:
+-            extra_compile_args["nvcc"].append("-gencode=arch=compute_120,code=sm_120")  # RTX 5090
++            # RTX A6000 is sm_86. Do not compile sm_120.
++            pass
+         elif cuda_version is not None and cuda_version < 12.8:
+             print(" WARNING: CUDA version < 12.8 detected. RTX 5090/Blackwell (sm_120) will NOT be supported.")
+             print(" To use RTX 5090 or Blackwell GPUs, please upgrade to CUDA 12.8 or higher and recompile.")

@@ -1,0 +1,73 @@
+dataset,split,case_id,case_prompt_id,prompt,prompt_type,target_class,target_gray_value,target_mode,target_classes,target_gray_values,prompt_activate_frame,activation_reason,num_case_frames
+CAMUS,test,27,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,361
+CAMUS,test,27,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,361
+CAMUS,test,27,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,361
+CAMUS,test,35,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,338
+CAMUS,test,35,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,338
+CAMUS,test,35,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,338
+CAMUS,test,45,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,355
+CAMUS,test,45,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,355
+CAMUS,test,45,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,355
+CAMUS,test,42,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,377
+CAMUS,test,42,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,377
+CAMUS,test,42,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,377
+CAMUS,test,46,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,300
+CAMUS,test,46,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,300
+CAMUS,test,46,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,300
+CAMUS,test,13,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,452
+CAMUS,test,13,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,452
+CAMUS,test,13,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,452
+CAMUS,test,78,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,329
+CAMUS,test,78,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,329
+CAMUS,test,78,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,329
+CAMUS,test,69,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,342
+CAMUS,test,69,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,342
+CAMUS,test,69,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,342
+CAMUS,test,65,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,449
+CAMUS,test,65,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,449
+CAMUS,test,65,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,449
+CAMUS,test,30,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,333
+CAMUS,test,30,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,333
+CAMUS,test,30,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,333
+CAMUS,test,28,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,321
+CAMUS,test,28,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,321
+CAMUS,test,28,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,321
+CAMUS,test,72,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,289
+CAMUS,test,72,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,289
+CAMUS,test,72,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,289
+CAMUS,test,79,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,428
+CAMUS,test,79,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,428
+CAMUS,test,79,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,428
+CAMUS,test,5,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,387
+CAMUS,test,5,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,387
+CAMUS,test,5,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,387
+CAMUS,test,55,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,427
+CAMUS,test,55,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,427
+CAMUS,test,55,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,427
+CAMUS,test,12,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,352
+CAMUS,test,12,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,352
+CAMUS,test,12,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,352
+CAMUS,test,70,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,401
+CAMUS,test,70,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,401
+CAMUS,test,70,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,401
+CAMUS,test,14,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,374
+CAMUS,test,14,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,374
+CAMUS,test,14,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,374
+CAMUS,test,18,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,325
+CAMUS,test,18,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,325
+CAMUS,test,18,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,325
+CAMUS,test,29,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,241
+CAMUS,test,29,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,241
+CAMUS,test,29,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,241
+CAMUS,test,32,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,275
+CAMUS,test,32,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,275
+CAMUS,test,32,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,275
+CAMUS,test,36,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,320
+CAMUS,test,36,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,320
+CAMUS,test,36,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,320
+CAMUS,test,4,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,281
+CAMUS,test,4,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,281
+CAMUS,test,4,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,281
+CAMUS,test,15,0,segment the Left Atrium,exact,Left Atrium,3,single,Left Atrium,3,0,first_visible:Left Atrium,452
+CAMUS,test,15,1,segment the Left Ventricle,exact,Left Ventricle,2,single,Left Ventricle,2,0,first_visible:Left Ventricle,452
+CAMUS,test,15,2,segment the Left Ventricular Myocardium,exact,Left Ventricular Myocardium,1,single,Left Ventricular Myocardium,1,0,first_visible:Left Ventricular Myocardium,452

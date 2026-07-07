@@ -1,0 +1,64 @@
+dataset,split,case_id,case_prompt_id,prompt,prompt_type,target_class,target_gray_value,target_mode,target_classes,target_gray_values,prompt_activate_frame,activation_reason,num_case_frames
+ACDC,test,41,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,171
+ACDC,test,41,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,171
+ACDC,test,41,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,50,first_visible:RV cavity,171
+ACDC,test,35,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,138
+ACDC,test,35,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,138
+ACDC,test,35,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,138
+ACDC,test,72,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,123
+ACDC,test,72,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,123
+ACDC,test,72,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,50,first_visible:RV cavity,123
+ACDC,test,66,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,74,first_visible:LV cavity,150
+ACDC,test,66,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,74,first_visible:RV cavity,150
+ACDC,test,66,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,74,first_visible:myocardium,150
+ACDC,test,61,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,147
+ACDC,test,61,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,147
+ACDC,test,61,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,147
+ACDC,test,2,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,43,first_visible:LV cavity,185
+ACDC,test,2,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,43,first_visible:myocardium,185
+ACDC,test,2,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,55,first_visible:RV cavity,185
+ACDC,test,3,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,197
+ACDC,test,3,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,197
+ACDC,test,3,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,197
+ACDC,test,29,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,156
+ACDC,test,29,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,156
+ACDC,test,29,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,156
+ACDC,test,40,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,145
+ACDC,test,40,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,145
+ACDC,test,40,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,145
+ACDC,test,6,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,196
+ACDC,test,6,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,196
+ACDC,test,6,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,44,first_visible:RV cavity,196
+ACDC,test,37,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,209
+ACDC,test,37,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,209
+ACDC,test,37,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,209
+ACDC,test,60,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,70,first_visible:LV cavity,165
+ACDC,test,60,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,70,first_visible:myocardium,165
+ACDC,test,60,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,80,first_visible:RV cavity,165
+ACDC,test,50,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,152
+ACDC,test,50,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,152
+ACDC,test,50,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,79,first_visible:RV cavity,152
+ACDC,test,46,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,153
+ACDC,test,46,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,153
+ACDC,test,46,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,63,first_visible:RV cavity,153
+ACDC,test,14,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,120
+ACDC,test,14,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,120
+ACDC,test,14,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,48,first_visible:RV cavity,120
+ACDC,test,18,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,163
+ACDC,test,18,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,163
+ACDC,test,18,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,163
+ACDC,test,30,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,151
+ACDC,test,30,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,151
+ACDC,test,30,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,151
+ACDC,test,34,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,155
+ACDC,test,34,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,155
+ACDC,test,34,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,155
+ACDC,test,38,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,163
+ACDC,test,38,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,163
+ACDC,test,38,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,163
+ACDC,test,4,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,216
+ACDC,test,4,1,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,216
+ACDC,test,4,2,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,56,first_visible:RV cavity,216
+ACDC,test,15,0,segment the LV cavity,exact,LV cavity,3,single,LV cavity,3,0,first_visible:LV cavity,130
+ACDC,test,15,1,segment the RV cavity,exact,RV cavity,1,single,RV cavity,1,0,first_visible:RV cavity,130
+ACDC,test,15,2,segment the myocardium,exact,myocardium,2,single,myocardium,2,0,first_visible:myocardium,130
