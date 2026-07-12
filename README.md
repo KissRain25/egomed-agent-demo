@@ -12,9 +12,9 @@ A clinician wearing smart glasses says, from a first-person view, **"Segment the
 
 EgoMed-Agent is a multi-agent system in which three agents cooperate for interactive egocentric medical image segmentation:
 
-- **Detection Agent** (YOLO26) — detects candidate medical targets frame by frame;
-- **Confirmation Agent** (DeepSeek) — grounds the instruction against the candidates with a reliability score, confirming when the grounding is reliable and asking the user to clarify when it is not;
-- **Propagation Agent** (SAM 2) — propagates the segmentation mask, and when the detection box and the propagated box diverge below a threshold τ₂ it re-initializes propagation from the current detection (IoU-gated correction), keeping the mask on the target across frames.
+- **Detection Agent** — detects candidate medical targets frame by frame;
+- **Confirmation Agent** — grounds the instruction against the candidates with a reliability score, confirming when the grounding is reliable and asking the user to clarify when it is not;
+- **Propagation Agent** — propagates the segmentation mask, and when the detection box and the propagated box diverge below a threshold τ₂ it re-initializes propagation from the current detection (IoU-gated correction), keeping the mask on the target across frames.
 
 These realize the paper's two workflows: the **Target Confirmation Workflow** (confirm the user-intended target) and the **Localization-Guided Propagation Workflow** (segment stably across the egocentric video).
 
