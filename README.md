@@ -1,8 +1,6 @@
 # EgoMed-Agent — Interactive Egocentric Medical Image Segmentation (IEMIS)
 
 > Code for the paper *“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”*.
-> Built on Meta FAIR's [SAM 2](https://github.com/facebookresearch/sam2) (Apache-2.0; see Acknowledgments).
-> Paper section / table ↔ script mapping: [`PAPER_TO_CODE.md`](PAPER_TO_CODE.md).
 
 ## Demo
 
