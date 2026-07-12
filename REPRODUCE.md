@@ -1,6 +1,6 @@
 # Reproduction Guide (REPRODUCE)
 
-Reproduces the experiments in *Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation*. Read alongside `README.md` (repository layout) and `PAPER_TO_CODE.md` (paper section / table / figure ↔ script).
+Reproduces the experiments in *“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”*. Read alongside `README.md` (repository layout) and `PAPER_TO_CODE.md` (paper section / table / figure ↔ script).
 
 ## What can be reproduced
 - **Evaluation (Table II main results / ablations / qualitative)**: given the weights below, inference is deterministic and reproducible.

@@ -1,6 +1,6 @@
 # Paper → Code Map (PAPER_TO_CODE)
 
-Maps each section / table of the paper *Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation* to the scripts under `scripts/` and the result paths under `runs/`.
+Maps each section / table of the paper *“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”* to the scripts under `scripts/` and the result paths under `runs/`.
 
 > Main-result script: `scripts/egomed_agent/egomed-agent-iou06.py` (`TRACK_IOU_THRES=0.6`, i.e. τ₂=0.6 in the paper).
 > Run everything from the repository root; scripts have no argparse — edit the config block at the top of each file.
