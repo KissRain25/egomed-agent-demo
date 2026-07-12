@@ -6,7 +6,7 @@ Reproduces the experiments in *Understanding From Human Perspective: A Multi-age
 - **Evaluation (Table II main results / ablations / qualitative)**: given the weights below, inference is deterministic and reproducible.
 - **Training**: the scripts do **not** fix a random seed, so re-training gives slightly different weights; we therefore provide the trained weights.
 - **Target Confirmation (Table III, GSA/TCA)**: relies on the DeepSeek API, which is **non-deterministic** and whose models change over time, so the numbers may not reproduce bit-for-bit.
-- **Dataset**: egomed5 (egocentric recordings + projected GT) is released on Hugging Face (see the Dataset section of `README.md`). The first-frame-selection / keyframe scripts used to build the GT run on the collectors' local machines and are not part of this repository.
+- **Dataset**: The Dataset contains egocentric recordings and projected GT and is released on Hugging Face (see the Dataset section of `README.md`). The first-frame-selection / keyframe scripts used to build the GT run on the collectors' local machines and are not part of this repository.
 
 ## 0. Prerequisites
 - Linux + NVIDIA GPU (the paper used an RTX A6000 48G); CUDA 12.x; conda.
@@ -41,10 +41,12 @@ The comparison baselines use external repositories; clone each at the commit bel
 Apply a patch: `cd /path/to/<repo> && git apply /path/to/EgoMed-Agent/comparison_methods/patches/<repo>.patch`
 
 ## 4. Data
-Obtain egomed5 from Hugging Face and lay it out under `data/<DS>/`. Key files:
+Obtain the Dataset from Hugging Face and lay it out under `data/<DS>/`. Key files:
 `data/<DS>/img/<case>/*.jpg` (frames), `data/<DS>/label/<case>/*.png` (GT), and
 `data/text_prompt_eval/<DS>_test_prompt_schedule.csv` (evaluation schedule — shipped in this repo).
 The dataset split is train:val:test = 5:2:3.
+
+> `egomed5` appears in several legacy script and file names as an internal identifier. It is not the name of the Dataset.
 
 ## 5. Paths
 The core pipeline (`scripts/egomed_agent`, `detection_agent`, `confirmation_agent`, `baselines`) resolves the repository root automatically and runs from any clone. Override data / output locations with the environment variables `EGOMED_ROOT` / `EGOMED_EXT_ROOT` (see Path configuration below).

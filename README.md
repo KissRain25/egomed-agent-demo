@@ -71,9 +71,9 @@ Scripts have no argparse — edit the config block at the top of each file (`CUD
 - **Detection Agent** (`scripts/detection_agent/`): `train_yolo26_egomed5_all.py` (5 per-modality detectors) · `train_tool_selection_yolo26_cls.py` (image-type classifier);
 - **nnU-Net upper bound**: `scripts/baselines/train_nnunet_egomed5.py`.
 
-## Dataset (egomed5)
+## Dataset
 
-523 videos / 173,657 frames / **5 modalities** (CT · MRI · ultrasound · X-ray · endoscopy) / 12 targets / 5 scenes. Released on Hugging Face: [`daizywang/EgoMed-IEMIS`](https://huggingface.co/datasets/daizywang/EgoMed-IEMIS); the collection protocol is provided in the paper's supplementary material.
+523 videos / 173,657 frames / **5 modalities** (CT · MRI · ultrasound · X-ray · endoscopy) / 12 targets / 5 scenes. Released through the [Hugging Face dataset repository](https://huggingface.co/datasets/daizywang/EgoMed-IEMIS); the collection protocol is provided in the paper's supplementary material.
 
 ## Results
 
