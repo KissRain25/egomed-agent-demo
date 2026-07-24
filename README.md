@@ -1,6 +1,6 @@
 # EgoMed-Agent — Interactive Egocentric Medical Image Segmentation (IEMIS)
 
-> Code for the paper *“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”*.
+> Code for the paper [*“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”*](https://arxiv.org/abs/2607.17341).
 
 ## Demo
 
