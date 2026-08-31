@@ -36,7 +36,7 @@ import os
 import os as _os
 from pathlib import Path as _Path
 REPO_ROOT = _Path(_os.environ.get("EGOMED_ROOT") or next((_a for _a in _Path(__file__).resolve().parents if (_a / "setup.py").exists()), _Path(__file__).resolve().parents[1]))
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import re
 import sys
@@ -67,6 +67,8 @@ PROMPT_SCHEDULE_CSV = Path(
     f"{REPO_ROOT}/data/text_prompt_eval/egomed5_test_prompt_schedule.csv"
 )
 
+# All 5 modality weights are now present (downloaded from hf-mirror EgoMed-IEMIS models).
+# Full list for complete Table II reproduction:
 DATASETS = [
     "Amos",
     "CAMUS",

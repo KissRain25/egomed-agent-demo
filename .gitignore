@@ -28,3 +28,10 @@ demo/backend/checkpoints/*.pt
 *.pt
 *.pth
 _hf_release_staging/
+
+# one-off debug / scratch scripts (never committed)
+_*.py
+temp_*.py
+temp_*/
+misc_*.py
+*.log
