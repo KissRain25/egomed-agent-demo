@@ -28,6 +28,7 @@ demo/backend/checkpoints/*.pt
 *.pt
 *.pth
 _hf_release_staging/
+.gradio/
 
 # one-off debug / scratch scripts (never committed)
 _*.py

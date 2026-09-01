@@ -11,7 +11,8 @@ MIRROR = "https://hf-mirror.com"
 DATASET = "daizywang/EgoMed-IEMIS"
 REVISION = "main"
 
-ROOT = Path(r"D:\EgoMed-Agent")
+# 项目根目录 = 本脚本所在目录的上一级（自动定位，不依赖具体电脑）
+ROOT = Path(__file__).resolve().parent.parent
 YOLO_RUN = ROOT / "runs" / "yolo26_det"
 
 # 目标文件 -> (在线路径, 本地落盘路径)
