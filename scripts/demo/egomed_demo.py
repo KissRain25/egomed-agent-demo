@@ -193,11 +193,19 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
                     id_to_name, class_id_to_gray, output_dir, target_text,
                     conf_thres=None, min_area_ratio=0.001, min_occurrence=2,
                     filter_enabled=True, drift_area_ratio=3.0,
-                    drift_center_ratio=0.15):
+                    drift_center_ratio=0.15, fill_bgr=None,
+                    max_prop_frames=None):
     """Single-target online segmentation: detect -> propagate -> re-track.
 
     Mirrors `evaluate_case` from the engine but tracks only ONE class and needs
     no GT labels / prompt schedule (the chosen target is active from frame 0).
+
+    fill_bgr: 分割区域叠加颜色 (BGR)。None 表示用引擎默认红色。
+              内窥镜息肉用绿色 (0,255,0) 对比更明显。
+    max_prop_frames: 单段 SAM2 传播的最大帧数上限。屏幕翻拍等低质量视频里
+              SAM2 长程传播会持续漂移（几帧就偏出目标），设一个短上限
+              （如 10 帧）强制周期性地用 YOLO 检测框重新定位，可显著
+              减少"标注跳到错误位置"的问题。None 表示不限制。
     """
     overlay_dir = output_dir / "overlay"
     mask_dir = output_dir / "masks"
@@ -291,6 +299,7 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
         last_valid_box = None
         prev_mask = None
         prev_center = None
+        frames_in_seg = 0
         frame_diag = float((frame_w ** 2 + frame_h ** 2) ** 0.5)
         for out_idx, out_obj_ids, out_mask_logits in eng.propagate_video(
             predictor, inference_state, current
@@ -302,7 +311,21 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
                 out_obj_ids, out_mask_logits, {obj_id: target_id}
             )
             mask = m.get(target_id)
-            if mask is None:
+            # "丢失" = 无 mask 输出，或 mask 全空（SAM2 跟丢时常返回
+            # 全空 mask 而非 None，两种都要视为丢失，否则该帧之后的
+            # 所有帧都会一路空转，导致只有前几帧有标注）。
+            lost = (mask is None or int(mask.sum()) == 0)
+            if lost:
+                # 若 YOLO 在这一帧仍检测到目标，立即中断本段并用它的框
+                # 重新初始化（否则从丢帧开始到视频结尾都不会再有 mask，
+                # 出现"YOLO 框一直在、分割标注只有前几帧"的现象）。
+                if out_idx > current and target_id in detections[out_idx]:
+                    next_reinit = out_idx
+                    events.append(
+                        f"segment {segment_id}: 丢失重捕 @帧 {out_idx}"
+                    )
+                    print(f"[demo] 丢失重捕 @帧 {out_idx}")
+                    break
                 continue
 
             masks[out_idx] = mask
@@ -319,6 +342,24 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
                 if len(xs) > 0:
                     prev_center = (float(xs.mean()), float(ys.mean()))
                 continue
+
+            # ---- 段长限制：SAM2 在低质量（屏幕翻拍）视频上长程传播会
+            # 缓慢漂移出目标。限制单段传播长度，到期就跳到下一个有 YOLO
+            # 检测的帧重新定位，把漂移切断在可接受范围内。----
+            frames_in_seg += 1
+            if (max_prop_frames and frames_in_seg >= max_prop_frames
+                    and out_idx + 1 < num_frames):
+                nxt = out_idx + 1
+                while nxt < num_frames and target_id not in detections[nxt]:
+                    nxt += 1
+                if nxt < num_frames:
+                    next_reinit = nxt
+                    events.append(
+                        f"segment {segment_id}: 周期重捕 @帧 {nxt} "
+                        f"(本段已传{frames_in_seg}帧)"
+                    )
+                    print(f"[demo] 周期重捕 @帧 {nxt} (本段已传{frames_in_seg}帧)")
+                break
 
             tb = track_boxes[out_idx]
             reason = None
@@ -360,6 +401,10 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
         current = next_reinit if next_reinit is not None else num_frames
 
     # 5. Render per-frame prediction + overlay.
+    #    fill_bgr=None 表示"用引擎默认红色"：只有息肉用绿色，其余模态
+    #    （X光/超声/CT/MRI）保持引擎原来的行为，不能把 None 传下去。
+    if fill_bgr is None:
+        fill_bgr = (0, 0, 255)
     overlay_files = []
     for i, image_path in enumerate(image_files):
         pred_label = np.zeros((frame_h, frame_w), dtype=np.uint8)
@@ -385,6 +430,7 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
             track_boxes=({target_id: track_boxes[i]}
                          if track_boxes.get(i) is not None else {}),
             output_path=of,
+            fill_bgr=fill_bgr,
         )
         overlay_files.append(of)
 
@@ -531,11 +577,20 @@ def segment_video(target_text, source_path, modality=None,
     num_frames = len(image_files)
     print(f"[demo] modality={modality} target={target_text} frames={num_frames}")
 
+    # 内窥镜息肉：用绿色叠加，避免红色息肉在红色覆盖下看不清。
+    # （其他模态保持引擎默认的红色预测叠加）
+    is_polyp = "PolypGen" in modality
+    fill_bgr = (0, 255, 0) if is_polyp else None
     result = _segment_target(
         predictor, yolo_model, image_files, frame_dir, target_id,
         id_to_name, class_id_to_gray, base, target_text,
         conf_thres=conf_thres, min_area_ratio=min_area_ratio,
         min_occurrence=min_occurrence, filter_enabled=filter_enabled,
+        # 内窥镜多是屏幕翻拍视频，SAM2 长程传播容易漂移：限长 10 帧
+        # 周期性用 YOLO 框重新定位，并把面积突变阈值收紧到 2 倍。
+        drift_area_ratio=2.0 if is_polyp else 3.0,
+        max_prop_frames=10 if is_polyp else None,
+        fill_bgr=fill_bgr,
     )
 
     if result["status"].startswith("未检测"):

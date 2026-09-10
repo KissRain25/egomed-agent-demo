@@ -758,6 +758,8 @@ def overlay_prediction(
     active_dets=None,
     track_boxes=None,
     output_path=None,
+    fill_bgr=(0, 0, 255),
+    fill_alpha=0.55,
 ):
     if not SAVE_OVERLAY:
         return
@@ -765,12 +767,14 @@ def overlay_prediction(
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     vis = image_bgr.copy()
 
-    # Red prediction overlay.
+    # Prediction overlay (customizable colour).
     pred_mask = pred_label > 0
     if pred_mask.any():
-        red = np.zeros_like(vis)
-        red[:, :, 2] = 255
-        vis[pred_mask] = cv2.addWeighted(vis, 0.45, red, 0.55, 0)[pred_mask]
+        fill = np.zeros_like(vis)
+        fill[:, :, 0] = fill_bgr[0]
+        fill[:, :, 1] = fill_bgr[1]
+        fill[:, :, 2] = fill_bgr[2]
+        vis[pred_mask] = cv2.addWeighted(vis, 0.45, fill, fill_alpha, 0)[pred_mask]
 
     # Green GT contours.
     if DRAW_GT_CONTOUR_ON_OVERLAY and gt_label is not None:
