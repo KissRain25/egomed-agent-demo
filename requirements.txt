@@ -32,6 +32,7 @@ distro==1.9.0
 dynamic_network_architectures==0.4.3
 einops==0.8.2
 et_xmlfile==2.0.0
+fastapi>=0.115.0
 filelock==3.19.1
 fonttools==4.59.2
 frozenlist==1.7.0
@@ -127,6 +128,7 @@ Pygments==2.19.2
 pyparsing==3.2.3
 PySocks==1.7.1
 python-dateutil==2.9.0.post0
+python-multipart>=0.0.9
 python-pptx==1.0.2
 pytorch-lightning==2.5.5
 pytz==2025.2
@@ -194,6 +196,7 @@ ultralytics-thop==2.0.18
 unittest2==1.1.0
 urllib3==2.5.0
 usort==1.0.2
+uvicorn[standard]>=0.30.0
 wandb==0.22.0
 watchdog==6.0.0
 wcwidth==0.2.13

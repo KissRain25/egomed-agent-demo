@@ -143,8 +143,8 @@ D:\EgoMed-Agent\runs\demo_output\<时间戳>\
 
 | 人 | 职责 |
 |----|------|
-| 小李（你） | 数据 + 视频整理（EgoMed-Screen） |
-| 小王（队友） | 代码 + 跑通流程（EgoMed-Agent） |
+| 闫（你） | 数据 + 视频整理（EgoMed-Screen） |
+| 李（队友） | 代码 + 跑通流程（EgoMed-Agent） |
 | 交叉 | 模型训练/验证 |
 
 > 数据格式约定见 `DATA_FORMAT_AGREEMENT.md`
