@@ -388,7 +388,9 @@ from asr_engine import transcribe         # 语音 -> 文字
 
 `/api/v1/audio` 假实现同理：`text` 固定返回 `"帮我分割左心室"`，`target` 返回 `"LV cavity"`。
 
-### A.7 测试样例（已存在，可直接用）
+### A.7 测试样例
+
+**正常帧（原始数据，需要本机有 `data/`）**：
 
 | 用途 | 路径 |
 |---|---|
@@ -397,6 +399,27 @@ from asr_engine import transcribe         # 语音 -> 文字
 | 心脏超声 | `D:\EgoMed-Agent\data\CAMUS\img\<病例号>\` |
 | 胸片 X 光 | `D:\EgoMed-Agent\data\Montgomery-County-CXR-Set\img\<病例号>\` |
 | 内窥镜 | `D:\EgoMed-Agent\data\PolypGen2021_MultiCenterData_v3\img\<病例号>\` |
+
+**取样例帧 + 生成坏帧（推荐）**：
+
+```bash
+# 1. 各模态取样例帧 -> data/samples/<模态>/（每个模态 12 帧，需要本机有 data/）
+python client/make_test_frames.py --collect
+
+# 2. 生成坏帧 -> data/samples/bad/（不需要数据，没有底图时自动合成一张）
+python client/make_test_frames.py
+```
+
+坏帧共 5 张，专用于验证边界处理。契约（四·A1）要求这类画面返回
+`status:"ok"` + `overlay:""` + 一句提示语，**不得返 500，也不得走错误分支**：
+
+| 文件 | 模拟场景 |
+|---|---|
+| `blur.jpg` | 镜头没对准 / 运动模糊 |
+| `dark.jpg` | 环境光不足 / 屏幕太暗 |
+| `lowcontrast.jpg` | 屏幕反光、白平衡失准 |
+| `black.jpg` | 遮挡 / 没开屏幕 |
+| `noise.jpg` | 对着墙 / 对着地面（非医学影像） |
 
 ### A.8 启动与自检命令（可直接复制）
 
@@ -427,3 +450,4 @@ curl.exe -F "session_id=test-001" -F "timestamp=1789000000000" -F "audio=@test.w
 |------|------|----------|-----|
 | 2026-09-10 | v0.1 | 创建草案 | 闫 |
 | 2026-09-10 | v0.2 | 全部待定项拍板定死：接口范围收敛为 A1/A2、确定 multipart 上传与 overlay 返回、新增状态与生命周期语义（目标切换 / 模态防抖 / 帧率丢帧 / 超时重试 / 性能预算）、新增 6 个错误码、新增决议记录；新增附录 A（服务端实现前置信息：运行环境 / 依赖缺口 / 复用入口 / 在线化改造方案 / 测试样例 / 启动自检命令） | 闫 |
+| 2026-09-10 | v0.2.1 | 附录 A.7 补全测试样例：新增 `client/make_test_frames.py`（各模态取样例帧 + 生成 5 张坏帧，坏帧无需数据即可生成）；原 A.7 只列了原始数据路径，而"坏帧"实际并不存在。**接口范围与字段无任何变化**，A1/A2 实现依据仍为第四节 | 闫 |
