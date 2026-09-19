@@ -36,6 +36,10 @@ temp_*.py
 temp_*/
 misc_*.py
 *.log
+run_test.py
+
+# 备份文件（返工前的原版存档，不提交）
+*.bak-*
 
 # 调试残留归档目录（含缩略图缓存，不提交）
 _archive/
