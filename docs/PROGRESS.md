@@ -51,6 +51,7 @@
 | 12 | **ASR 谐音问题解决** | 中文医学词汇同音错字（"心肌"→"心机"、"息肉"→"西肉"等）实测 1/8 → 8/8：新增 `scripts/demo/asr_medical.py`（medium + zh + 领域 prompt + hotwords + beam5 + VAD），接口与 `asr_engine` 一致，稳态 400~500ms/句；方案见 `API_CONTRACT.md` A.11 | 2026-09-16 |
 | 13 | **接口联调闭环（T5/T6/T7）** | 李完成 A.10 P0×4 返工（丢帧语义/预热/坏帧分支/字段对齐）+ A.11 接入；闫新增一键验收脚本 `client/acceptance_test.py` 复验：mock 8/8、真引擎首帧 66s→42ms、并发 8.75s→238ms、语音 7/8；遗留 cmd_02 幻觉 known issue（A.11 归闫） | 2026-09-18 |
 | 14 | **接口方案冻结（T8，v1.0）** | `API_CONTRACT.md` 基于 v0.2.4 冻结为 v1.0：接口范围/字段/类型/路径/错误码全部锁死，冻结版存档 `docs/API_CONTRACT_v1.0_frozen.md`，群通知李。接口阶段（T1~T8）收官，此后变更走 v1.x 流程 | 2026-09-19 |
+| 15 | **ASR 幻觉防护（A.11 遗留收尾）** | `asr_medical.py` 三层防护（解码侧抑制 `condition_on_previous_text=False`+repetition_penalty / 输出侧 n-gram 复读检测 / 逐段时间兜底）+ 降级重试 + 返空串兜底，`transcribe` 签名不变、服务端零改动；cmd_02 8.8s→**1.2s** 且文本正确、连跑 10 次全对，模块自测 **25/25**、端到端 real 套件 **10/10**（语音 8/8，此前 7/8）；新增自测 CLI `--only/--stress`。方案见契约 A.11.1 | 2026-09-19 |
 
 ### ⏭️ 待办（按优先级）
 
