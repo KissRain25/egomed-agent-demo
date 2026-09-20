@@ -310,6 +310,7 @@ class MicListener:
         self._noise = None            # 自适应噪声底（启动后前 ~0.5s 估计）
         self._noise_samples = []
         self._last_emit = 0.0
+        self._seg_rms_max = 0.0       # 本句说话期间的峰值 RMS（结句时用于日志，别取静音块）
         self.stats = {"segments": 0, "dropped": 0, "last_rms": 0.0, "last_sec": 0.0}
 
     # ------------------------------------------------------------ 生命周期
@@ -340,7 +341,7 @@ class MicListener:
     def flush(self) -> None:
         """强制结束当前句（流停止/退出/回放结束时调用，避免最后一句丢失）"""
         if self._speaking:
-            self._emit(self.stats.get("last_rms", 0.0))
+            self._emit(self._seg_rms_max)
 
     # ------------------------------------------------------------ 块处理
     def _on_block(self, block) -> None:
@@ -374,8 +375,10 @@ class MicListener:
                 self._speech = list(self._pre)      # 带上预滚，避免首字被切
                 self._pre = []
                 self._silence_frames = 0
+                self._seg_rms_max = rms
         else:
             self._speech.append(block)
+            self._seg_rms_max = max(self._seg_rms_max, rms)
             if rms < thr:
                 self._silence_frames += block.size
             else:
@@ -400,10 +403,12 @@ class MicListener:
             self.stats["dropped"] += 1
             return
         self._last_emit = now
+        seg_rms = max(self._seg_rms_max, rms)          # 用说话期间峰值电平，而非结句静音块
+        self._seg_rms_max = 0.0
         self.stats["segments"] += 1
-        self.stats["last_rms"] = rms
+        self.stats["last_rms"] = seg_rms
         self.stats["last_sec"] = dur
-        mc.log(f"[mic] 识别到一句话：{dur:.2f}s，RMS {rms:.3f}"
+        mc.log(f"[mic] 识别到一句话：{dur:.2f}s，说话峰值 RMS {seg_rms:.4f}"
                f"{'（超长截断）' if truncated else ''} → 发送 A2")
         try:
             self.on_speech(to_wav_bytes(audio, self.samplerate), dur)
