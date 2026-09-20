@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import statistics
 import sys
 import threading
@@ -273,6 +274,237 @@ class Hud:
 
 
 # ===========================================================================
+# 二之二、麦克风监听（N4.6：真人说话 → A2 → 切换分割目标）
+# ===========================================================================
+class MicListener:
+    """实时麦克风监听：能量 VAD 自动切句，说完一句回调一次。
+
+    机制（与摄像头的"轮询"不同，音频是驱动回调）：
+      sounddevice.InputStream(callback=...) 持续推音频块 →
+      计算块 RMS → 超过阈值判"在说话"，说话中持续累积 → 静音超过 silence 秒判"说完了"
+      → 拼成 wav（16 kHz 单声道 PCM16）→ 回调 on_speech(wav_bytes, 时长, RMS)
+
+    不落盘、不常驻录音；只在判定成句后把那一句交给上层（上层落盘 + 发 A2）。
+    """
+
+    def __init__(self, on_speech, samplerate: int = 16000, threshold: float | None = None,
+                 silence_sec: float = 0.8, min_speech_sec: float = 0.4,
+                 preroll_sec: float = 0.3, max_speech_sec: float = 6.0,
+                 device: int | None = None, min_interval_sec: float = 1.0):
+        self.on_speech = on_speech
+        self.samplerate = samplerate
+        self.threshold = threshold
+        self.silence_sec = silence_sec
+        self.min_speech_sec = min_speech_sec
+        self.pre_roll = int(preroll_sec * samplerate)
+        self.max_speech_frames = int(max_speech_sec * samplerate)
+        self.device = device
+        self.min_interval = min_interval_sec
+        self._stream = None
+        self._pre: list = []          # 预滚缓冲（说话前的少量音频，避免吃掉首字）
+        self._speech: list = []       # 当前这句话
+        self._speaking = False
+        self._silence_frames = 0
+        self._noise = None            # 自适应噪声底（启动后前 ~0.5s 估计）
+        self._noise_samples = []
+        self._last_emit = 0.0
+        self.stats = {"segments": 0, "dropped": 0, "last_rms": 0.0, "last_sec": 0.0}
+
+    # ------------------------------------------------------------ 生命周期
+    def start(self) -> None:
+        import sounddevice as sd          # 延迟导入：未装也能跑非麦克风模式
+
+        def _cb(indata, frames, time_info, status):   # noqa: ARG001
+            self._on_block(indata[:, 0].copy())
+
+        self._stream = sd.InputStream(
+            samplerate=self.samplerate, channels=1, dtype="float32",
+            blocksize=1600, callback=_cb, device=self.device,
+        )
+        self._stream.start()
+        dev = self.device if self.device is not None else sd.default.device[0]
+        mc.log(f"[mic] 开始监听（设备 {dev}，{self.samplerate} Hz 单声道；"
+               f"阈值 {'自适应' if self.threshold is None else self.threshold}）——直接说话即可")
+
+    def stop(self) -> None:
+        self.flush()                      # 收尾：把最后一句发出去，别丢
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            finally:
+                self._stream = None
+
+    def flush(self) -> None:
+        """强制结束当前句（流停止/退出/回放结束时调用，避免最后一句丢失）"""
+        if self._speaking:
+            self._emit(self.stats.get("last_rms", 0.0))
+
+    # ------------------------------------------------------------ 块处理
+    def _on_block(self, block) -> None:
+        import numpy as np
+
+        rms = float(np.sqrt(np.mean(block ** 2))) if block.size else 0.0
+        # 前 0.5 s 估计噪声底，之后固定阈值（避免把环境噪声当成说话）
+        if self.threshold is None:
+            if len(self._noise_samples) < 10:
+                self._noise_samples.append(rms)
+                floor = max(self._noise_samples)
+                # 噪声底 ×4，但夹在 [0.003, 0.03]：
+                #   下限——部分笔记本麦克风电平极低（实测环境 RMS≈0.0000/峰值 0.0015），
+                #          门槛设高了会"听不到人声"；
+                #   上限——嘈杂环境噪声底可能到 0.015+，×4 后（0.06+）会盖过人声（实测踩过）。
+                self._noise = min(max(floor * 4.0, 0.003), 0.03)
+                if len(self._noise_samples) == 10:
+                    mc.log(f"[mic] 噪声底 RMS≈{floor:.4f} → 判定阈值 {self._noise:.4f}"
+                           f"（夹在 0.003~0.03；说话触发不了就 --mic-threshold 手调）")
+                return
+            thr = self._noise
+        else:
+            thr = self.threshold
+
+        if not self._speaking:
+            self._pre.append(block)
+            if sum(b.size for b in self._pre) > self.pre_roll:
+                self._pre.pop(0)
+            if rms >= thr:
+                self._speaking = True
+                self._speech = list(self._pre)      # 带上预滚，避免首字被切
+                self._pre = []
+                self._silence_frames = 0
+        else:
+            self._speech.append(block)
+            if rms < thr:
+                self._silence_frames += block.size
+            else:
+                self._silence_frames = 0
+            done = self._silence_frames >= self.silence_sec * self.samplerate
+            too_long = sum(b.size for b in self._speech) >= self.max_speech_frames
+            if done or too_long:
+                self._emit(rms, truncated=too_long)
+
+    def _emit(self, rms: float, truncated: bool = False) -> None:
+        import numpy as np
+
+        audio = np.concatenate(self._speech) if self._speech else np.zeros(0, dtype="float32")
+        self._speaking = False
+        self._speech = []
+        self._silence_frames = 0
+        dur = len(audio) / self.samplerate
+        if dur < self.min_speech_sec:
+            return                                     # 太短，当噪声丢掉
+        now = time.monotonic()
+        if now - self._last_emit < self.min_interval:
+            self.stats["dropped"] += 1
+            return
+        self._last_emit = now
+        self.stats["segments"] += 1
+        self.stats["last_rms"] = rms
+        self.stats["last_sec"] = dur
+        mc.log(f"[mic] 识别到一句话：{dur:.2f}s，RMS {rms:.3f}"
+               f"{'（超长截断）' if truncated else ''} → 发送 A2")
+        try:
+            self.on_speech(to_wav_bytes(audio, self.samplerate), dur)
+        except Exception as exc:                       # 回调线程里不能抛
+            mc.log(f"[mic] 处理失败：{exc}")
+
+
+def to_wav_bytes(audio, samplerate: int) -> bytes:
+    """float32 [-1,1] 单声道 → 16 kHz PCM16 wav bytes"""
+    import wave
+
+    pcm = np.clip(audio, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(samplerate)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def mic_selftest(seconds: float = 3.0, device: int | None = None) -> int:
+    """麦克风设备自测：只报 RMS 统计，不落盘、不发请求。"""
+    import numpy as np
+    import sounddevice as sd
+
+    mc.log("=" * 74)
+    mc.log(f"麦克风自测：录音 {seconds:g}s，只看电平统计（不保存音频）")
+    try:
+        rec = sd.rec(int(seconds * 16000), samplerate=16000, channels=1,
+                     dtype="float32", device=device)
+        sd.wait()
+    except Exception as exc:
+        mc.log(f"  打不开麦克风：{exc}")
+        return 1
+    rms = float(np.sqrt(np.mean(rec ** 2)))
+    peak = float(np.max(np.abs(rec)))
+    mc.log(f"  采样 {len(rec)} 点 ｜ 平均 RMS {rms:.4f} ｜ 峰值 {peak:.4f}")
+    if peak < 1e-4:
+        mc.log("  电平几乎为 0：检查系统麦克风权限/静音开关/设备选择（--mic-device N）")
+        return 1
+    mc.log(f"  设备可用。建议阈值：{max(peak * 0.3, 0.003):.3f}"
+           f"（当前安静环境峰值 {peak:.4f}；说话时若触发不了就适当调低）")
+    mc.log("=" * 74)
+    return 0
+
+
+def vad_selftest(wav_path: str, threshold: float | None = 0.005, url: str = "",
+                 send: bool = False) -> int:
+    """离线 VAD 回放自测：把一段 wav 按 0.1s 分块喂给 MicListener，
+
+    验证"切句 → 打包 wav → （可选）发 A2"整条麦克风链路，不需要真人说话。
+    """
+    import wave
+
+    import numpy as np
+
+    p = Path(wav_path)
+    if not p.is_file():
+        mc.log(f"wav 不存在：{p}")
+        return 2
+    with wave.open(str(p), "rb") as w:
+        sr = w.getframerate()
+        ch = w.getnchannels()
+        raw = w.readframes(w.getnframes())
+    audio = np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0
+    if ch > 1:
+        audio = audio.reshape(-1, ch).mean(axis=1)
+    if sr != 16000:                                   # 线性重采样到 16 kHz
+        n = int(len(audio) * 16000 / sr)
+        audio = np.interp(np.linspace(0, len(audio) - 1, n),
+                          np.arange(len(audio)), audio).astype("float32")
+    segs: list[bytes] = []
+    lc = MicListener(lambda wav, dur: segs.append(wav), threshold=threshold)
+    block = 1600
+    mc.log("=" * 74)
+    mc.log(f"离线 VAD 回放：{p.name}（{len(audio) / 16000:.2f}s，阈值 "
+           f"{'自适应' if threshold is None else threshold}）")
+    for i in range(0, len(audio), block):
+        lc._on_block(audio[i:i + block])
+    # 补 1.2s 静音让最后一句正常闭合（真实麦克风场景由 stop() 的 flush 兜底）
+    silence = np.zeros(int(1.2 * 16000), dtype="float32")
+    for i in range(0, len(silence), block):
+        lc._on_block(silence[i:i + block])
+    lc.flush()
+    mc.log(f"  切出 {len(segs)} 段：{[round(len(s) / 32000, 2) for s in segs]} s")
+    if not segs:
+        mc.log("  未切出语音段：阈值可能偏高（试 --vad-threshold 0.002）")
+        return 1
+    if send and url:
+        sid = mc.make_session_id("vad")
+        payload, ms, err = mc.post_audio(url, sid, segs[0], "vad_seg.wav", 30.0)
+        if err:
+            mc.log(f"  发 A2 失败：{err}")
+            return 1
+        mc.log(f"  A2 结果：text={payload.get('text')!r} target={payload.get('target')!r} "
+               f"need_confirm={payload.get('need_confirm')}（{ms:.0f}ms）")
+    mc.log("=" * 74)
+    return 0
+
+
+# ===========================================================================
 # 三、统计
 # ===========================================================================
 class Stats:
@@ -287,6 +519,8 @@ class Stats:
         self.no_target = 0       # 会话未设目标（服务端提示"请先告诉我要分割哪个器官"）
         self.set_target_text = ""    # A2 返回的识别文本
         self.set_target_target = ""  # A2 解析出的目标
+        self.voice_count = 0         # 实时语音指令条数（麦克风）
+        self.need_confirm_count = 0  # 需澄清次数（跨模态歧义，契约边界情况 2）
         self.dropped = 0         # 被新帧覆盖而丢弃
         self.overlay_nonempty = 0
         self.latencies: list[float] = []
@@ -386,6 +620,7 @@ class LiveRunner:
         self.last_message = ""
         self._lock = threading.Lock()
         self.stop = False
+        self.mic: MicListener | None = None
         self.out_dir = Path(args.out) if args.out else (
             DEFAULT_OUT / datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.samples_dir = self.out_dir / "samples"
@@ -430,25 +665,66 @@ class LiveRunner:
             self.stats.ok += 1
 
     # ---------------------------------------------------------------- 设置目标（A2）
+    def _apply_a2_payload(self, payload, elapsed: float, label: str, err=None) -> bool:
+        """统一处理 A2 响应：更新目标 / 澄清提示 / 消息，返回是否设上目标。"""
+        if err is not None:
+            mc.log(f"[A2] {label} 失败：{err}")
+            return False
+        if not isinstance(payload, dict):
+            mc.log(f"[A2] {label} 返回异常")
+            return False
+        text = str(payload.get("text") or "")
+        target = payload.get("target") or ""
+        candidates = payload.get("candidates") or []
+        self.stats.set_target_text = text or self.stats.set_target_text
+        if payload.get("status") == "error":
+            self.stats.need_confirm_count += 1
+            msg = str(payload.get("message") or "")
+            mc.log(f"[A2] 语音「{text}」→ 业务错误：{msg}")
+            self.last_message = msg
+            return False
+        if payload.get("need_confirm") or not target:
+            # 契约边界情况 2：跨模态歧义 → 需澄清（客户端应提示医生说得更具体）
+            self.stats.need_confirm_count += 1
+            msg = str(payload.get("message") or f"需要澄清：{candidates}")
+            mc.log(f"[A2] 语音「{text}」→ 需澄清，候选 {candidates}（{elapsed:.0f}ms）")
+            self.last_message = f"{msg}（候选：{'、'.join(map(str, candidates))}）" if candidates else msg
+            return False
+        self.stats.set_target_target = str(target)
+        mc.log(f"[A2] 语音「{text}」→ 目标 {target}（{elapsed:.0f}ms）")
+        self.last_message = str(payload.get("message") or f"已切换到 {target}")
+        return True
+
     def _set_target_from_audio(self, wav_path: Path) -> bool:
-        """发一段语音设置会话目标（A2），返回是否成功。"""
+        """启动时发一段预录音频设置目标（--audio，自动化用）"""
         if not wav_path.exists():
             mc.log(f"[A2] 音频不存在，跳过设目标：{wav_path}")
             return False
-        wav = wav_path.read_bytes()
         payload, elapsed, err = mc.post_audio(
-            self.args.url, self.session_id, wav, wav_path.name, self.args.timeout)
-        if err:
-            mc.log(f"[A2] 设置目标失败：{err}")
-            return False
-        text = str(payload.get("text") or "")
-        target = payload.get("target") or payload.get("targets") or ""
-        self.stats.set_target_text = text
-        self.stats.set_target_target = str(target)
-        mc.log(f"[A2] 语音「{text}」→ 目标 {target}（{elapsed:.0f}ms）")
-        if isinstance(payload.get("message"), str) and payload.get("message"):
-            self.last_message = payload["message"]
-        return bool(target)
+            self.args.url, self.session_id, wav_path.read_bytes(), wav_path.name,
+            self.args.timeout)
+        return self._apply_a2_payload(payload, elapsed, f"预录 {wav_path.name}", err)
+
+    # ---------------------------------------------------------------- 实时语音（麦克风）
+    def _on_speech(self, wav: bytes, dur: float) -> None:
+        """麦克风成句回调：落盘 + 发 A2 + 更新目标（在音频回调线程里，绝不能阻塞太久）"""
+        self.stats.voice_count += 1
+        try:
+            adir = self.out_dir / "audio"
+            adir.mkdir(parents=True, exist_ok=True)
+            wav_path = adir / f"voice_{self.stats.voice_count:03d}.wav"
+            wav_path.write_bytes(wav)
+        except Exception:
+            wav_path = None
+        threading.Thread(target=self._send_voice, args=(wav, dur, wav_path),
+                         daemon=True).start()
+
+    def _send_voice(self, wav: bytes, dur: float, wav_path) -> None:
+        payload, elapsed, err = mc.post_audio(
+            self.args.url, self.session_id, wav,
+            wav_path.name if wav_path else "voice.wav", self.args.timeout)
+        label = f"实时语音 {dur:.2f}s" + (f"（{wav_path.name}）" if wav_path else "")
+        self._apply_a2_payload(payload, elapsed, label, err)
 
     # ---------------------------------------------------------------- 渲染
     def _render(self, frame):
@@ -473,6 +749,10 @@ class LiveRunner:
             f"模态 {st.last_modality or '-'}  目标 {st.last_target or '-'}",
             f"{tag}",
         ]
+        if st.set_target_text:
+            lines.append(f"语音「{st.set_target_text}」（指令 {st.voice_count} 条）")
+        if st.need_confirm_count and not st.set_target_target:
+            lines.append("需澄清：请说得更具体（如“左心室 LV cavity”）")
         if st.no_target and not st.set_target_target:
             lines.append("尚未设置目标：请说话（--audio 或 --mic）")
         if msg:
@@ -494,6 +774,18 @@ class LiveRunner:
         # 先设目标：契约语义是"先说话（A2）→ 再发帧（A1）"，否则 A1 会提示"请先告诉我要分割哪个器官"
         if args.audio:
             self._set_target_from_audio(Path(args.audio))
+
+        # 实时语音（N4.6）：麦克风监听，说话即切换目标
+        if args.mic:
+            try:
+                self.mic = MicListener(
+                    self._on_speech, threshold=args.mic_threshold,
+                    device=args.mic_device)
+                self.mic.start()
+            except Exception as exc:
+                mc.log(f"[mic] 启动失败（降级为无麦克风模式）：{exc}")
+                mc.log("[mic] 提示：可用 --mic-selftest 先自测设备；或用 --audio 播预录音频")
+                self.mic = None
 
         loop_interval = 1.0 / max(1.0, min(source.fps or args.source_fps, 60.0))
         send_interval = 1.0 / max(0.1, args.fps)
@@ -551,6 +843,8 @@ class LiveRunner:
                     next_loop = time.perf_counter()
         finally:
             source.release()
+            if getattr(self, "mic", None) is not None:
+                self.mic.stop()
             if args.show:
                 cv2.destroyAllWindows()
             # 等发送线程收尾
@@ -606,6 +900,7 @@ class LiveRunner:
             f"| 坏帧（overlay 空） | {st.bad_frame} |",
             f"| 未设目标（会话未收到语音指令） | {st.no_target} |",
             f"| A2 设目标 | 文本「{st.set_target_text or '-'}」→ `{st.set_target_target or '-'}` |",
+            f"| 实时语音指令 / 需澄清 | {st.voice_count} / {st.need_confirm_count} |",
             f"| 网络错误 / 业务错误 | {st.http_err} / {st.biz_err} |",
             f"| 末次模态 / 目标 | `{st.last_modality or '-'}` / `{st.last_target or '-'}` |",
             "",
@@ -714,6 +1009,19 @@ def parse_args(argv=None):
     p.add_argument("--timeout", type=float, default=mc.TIMEOUT, help="单请求超时（秒）")
     p.add_argument("--out", default="", help="输出目录（默认 runs/live/<时间戳>）")
     p.add_argument("--probe", action="store_true", help="只探测摄像头设备后退出")
+    p.add_argument("--mic", action="store_true",
+                   help="开启实时麦克风监听：说话即切换分割目标（N4.6）")
+    p.add_argument("--mic-threshold", type=float, default=None,
+                   help="语音检测 RMS 阈值（默认自适应，约噪声底 3 倍）；嘈杂环境可手调 0.02~0.05")
+    p.add_argument("--mic-device", type=int, default=None, help="麦克风设备序号（默认系统默认设备）")
+    p.add_argument("--mic-selftest", type=float, default=0.0, metavar="SEC",
+                   help="麦克风自测：录 SEC 秒只报电平统计（不落盘、不发请求）后退出")
+    p.add_argument("--vad-selftest", default="", metavar="WAV",
+                   help="离线 VAD 回放自测：把 WAV 分块喂给麦克风切句逻辑（无需真人）")
+    p.add_argument("--vad-threshold", type=float, default=0.005,
+                   help="VAD 回放自测阈值（默认 0.005）")
+    p.add_argument("--vad-send", action="store_true",
+                   help="VAD 回放自测时把切出的第一段发 A2（需要服务端在跑）")
     p.set_defaults(show=True)
     return p.parse_args(argv)
 
@@ -722,6 +1030,11 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.probe:
         return probe_cameras()
+    if args.mic_selftest > 0:
+        return mic_selftest(args.mic_selftest, args.mic_device)
+    if args.vad_selftest:
+        return vad_selftest(args.vad_selftest, args.vad_threshold,
+                            url=args.url, send=args.vad_send)
     if args.source == "glasses":
         mc.log("[main] glasses 源未实现（眼镜 SDK 到位后补 GlassesSource）")
         return 2
