@@ -88,7 +88,9 @@ class VideoFileSource(FrameSource):
     name = "video"
 
     def __init__(self, path: str, loop: bool = True, fps: float = DEFAULT_SOURCE_FPS):
-        self.path = Path(path)
+        p = Path(path)
+        # 相对路径按项目根解析：无论当前工作目录在哪（例如从 C:\ 下调用）都能找到
+        self.path = p if p.is_absolute() else (PROJECT_ROOT / p)
         self.loop = loop
         self._fps = fps
         self._cap = None
