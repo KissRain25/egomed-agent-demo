@@ -20,6 +20,8 @@ EgoMed-Agent 一键批量验收脚本（T7 真引擎 / P0 返工复验用）
     R2  语音   ×8      期望 text 与预期逐字一致 + target 非空或需澄清；elapsed < 1500ms（A.11）
     R3  并发 5 帧      同一 session 5 线程并发，期望总耗时 < 2×单帧（P0.1 队列=1 覆盖旧帧）
                         ※ 需要 --concurrency N 显式开启（N=0 跳过），真引擎压力大时慎用
+    R4  连续帧出结果   X 光样例 + cmd_07 设目标后连发 --seg-frames 帧，期望至少一帧 overlay 非空
+                        ※ 2026-09-20 新增：补上此前缺失的 overlay 断言（见联调发现文档）
 
 用法
 ----
@@ -281,6 +283,55 @@ def run_real_suite(args, rep: Report, session: str) -> None:
             rep.add("R3", f"并发 {args.concurrency} 帧", passed, detail, total_ms)
 
 
+# ---------------------------------------------------------------- R4 分割结果断言
+def run_r4_overlay(args, rep: Report) -> None:
+    """R4 连续帧出分割结果（补 real 套件的 overlay 断言，2026-09-20 新增）
+
+    背景：此前 real 套件只断言"延迟 + 语音文本"，从未断言 overlay 非空，
+    导致"真引擎在客户端链路上全程返空"未被发现（详见
+    docs/联调发现_20260920_真引擎实时链路.md 发现 4）。
+
+    设计：
+      - 用检出率最高的 X 光样例 + 单目标无歧义指令（cmd_07「分割左肺」）
+      - 连发 N 帧（--seg-frames，默认 12），断言**至少一帧** overlay 非空
+      - 首帧返空属已知问题（服务端 min_occurrence=2，见 N13），故不要求首帧有结果
+    """
+    frames = sorted((f for f in (SAMPLE_DIR / "cxr").rglob("*")
+                     if f.suffix.lower() in mc.IMG_EXTS), key=mc.natural_key)
+    wav = AUDIO_DIR / "cmd_07.wav"
+    if not frames or not wav.is_file():
+        rep.add("R4", "连续帧出分割结果（样例缺失）", False,
+                f"需要 {SAMPLE_DIR / 'cxr'} 的图片与 {wav}")
+        return
+
+    session = mc.make_session_id(args.doctor)
+    ap, _ams, aerr = mc.post_audio(args.url, session, wav.read_bytes(), wav.name, args.timeout)
+    if aerr or not ap.get("target"):
+        rep.add("R4", "连续帧出分割结果", False,
+                f"设置目标失败（{aerr or ap.get('message')}）——A1 未设目标会直接短路返回")
+        return
+
+    n = max(2, args.seg_frames)
+    hit, net_err, last_msg = 0, 0, ""
+    for i in range(n):
+        jpg = mc.compress_image(frames[i % len(frames)])
+        payload, _ms, err = mc.post_frame(args.url, session, jpg,
+                                          f"seg_{i:03d}.jpg", args.timeout)
+        if err:
+            net_err += 1
+            continue
+        last_msg = str(payload.get("message") or "")
+        if payload.get("overlay"):
+            hit += 1
+
+    passed = hit > 0
+    detail = (f"{n} 帧中 {hit} 帧有 overlay（目标 {ap.get('target')}，"
+              f"网络错 {net_err}）；首帧返空属已知 N13。末次 message={last_msg!r}")
+    if not passed:
+        detail += "。全空排查顺序：① 目标是否已设（A2）② 服务端日志是否走推理 ③ 低置信检测被 min_occurrence 过滤"
+    rep.add("R4", f"连续 {n} 帧出分割结果", passed, detail)
+
+
 # ---------------------------------------------------------------- 入口
 def main() -> None:
     try:
@@ -303,6 +354,8 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=30.0,
                         help="单请求超时秒数（真引擎含推理，默认 30）")
     parser.add_argument("--doctor", default="acc", help="验收用医生编号（session_id 前缀），默认 acc")
+    parser.add_argument("--seg-frames", type=int, default=12,
+                        help="R4 连续发帧数（验 overlay 非空），默认 12；窗口越满延迟越高，别设太大")
     args = parser.parse_args()
     args.budget_ms = args.budget_ms if args.suite in ("real", "all") else 0
 
@@ -330,6 +383,8 @@ def main() -> None:
     if args.suite in ("real", "all"):
         mc.log("\n── real 套件：首帧延迟（R1，验 P0.2） + 语音 ×8（R2，验 A.11） + 并发（R3，验 P0.1） ──")
         run_real_suite(args, rep, session)
+        mc.log("\n── R4：连续帧出分割结果（补 overlay 断言，2026-09-20 新增） ──")
+        run_r4_overlay(args, rep)
 
     rep.dump(args.url, args.suite)
 
