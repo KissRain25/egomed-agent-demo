@@ -48,7 +48,12 @@ LOG_FILE = RUNS_DIR / "server_log.txt"
 SESSION_TTL_SECONDS = 30 * 60          # 30 分钟无请求可清理（契约 5.1）
 FRAME_ENDPOINT = "/api/v1/frame"
 AUDIO_ENDPOINT = "/api/v1/audio"
-WINDOW_SIZE = 10                        # 滚动窗口帧数（契约附录 A.5，建议 N=10）
+# 滚动窗口帧数：A.5 原建议 N=10，但每次请求都会对**整个窗口**重跑
+# 「检测 + SAM2 分割 + 跟踪」，实测延迟随窗口线性增长（2 帧 1.36s → 6 帧 3.39s
+# → 满窗 3.8s），突破客户端 3s 超时（见 docs/联调发现_20260920_真引擎实时链路.md）。
+# N13（方案 B）改为**只对最新帧推理**：窗口=1，计算量恒定、不随会话劣化；
+# 代价是失去跨帧传播（每帧独立分割，静态屏幕场景无影响；画面快速移动时掩膜可能抖动）。
+WINDOW_SIZE = 1
 
 # 假实现固定值（契约附录 A.6）
 MOCK_MODALITY = "ACDC (MRI 心脏)"
@@ -402,12 +407,16 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
             "need_confirm": False, "candidates": [],
         }
 
-    # 4. 对滚动窗口跑一次检测+分割+跟踪，取最新一帧 overlay
+    # 4. 对（窗口内的）最新帧跑一次检测+分割，取结果 overlay
+    #    N13：min_occurrence=1 —— 该滤波参数本意是"同一目标连续出现≥2帧才保留"
+    #    以抑制误检，但它假设后面还有帧；首次交互只有 1 帧时会把结果全滤掉，
+    #    表现为"每个会话第一帧必然返回'没检测到目标'"。这里显式传 1，让首帧即有结果。
     out_dir = STREAM_DIR / session_id / "seg"
     image_files, _ = demo.resolve_frames(fdir, out_dir)
     result = demo._segment_target(
         predictor, yolo_model, image_files, fdir, target_id,
         id_to_name, class_id_to_gray, out_dir, target,
+        min_occurrence=1,
     )
     if result["status"].startswith("未检测") or not result["overlay_files"]:
         return {
