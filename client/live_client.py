@@ -180,6 +180,56 @@ class WebcamSource(FrameSource):
             self._cap.release()
 
 
+class NetworkStreamSource(FrameSource):
+    """网络视频流采集源（手机当"模拟眼镜"摄像头）
+
+    典型用法：手机装 IP Webcam（Android）等 app 开 MJPEG 服务，
+    手机与电脑连**同一 WiFi**，然后：
+
+        python client/live_client.py --source url --input http://192.168.1.23:8080/video --mic
+
+    为什么要它：笔记本自带摄像头多为 640x480 且位置固定；手机分辨率高、
+    可手持移动，更接近"医生戴镜走动"的第一人称视角（`端到端流程设计.md` 的模拟策略）。
+    """
+
+    name = "url"
+
+    def __init__(self, url: str, fps: float = DEFAULT_SOURCE_FPS):
+        self.url = url if url.startswith(("http://", "https://", "rtsp://", "rtmp://")) \
+            else f"http://{url}"
+        self._fps = fps
+        self._cap = None
+
+    def open(self) -> None:
+        # MJPEG 走 FFMPEG 后端最稳；失败再退回默认后端
+        for backend, label in ((cv2.CAP_FFMPEG, "FFMPEG"), (cv2.CAP_ANY, "ANY")):
+            cap = cv2.VideoCapture(self.url, backend)
+            if cap.isOpened():
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    self._cap = cap
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if fps and fps > 0:
+                        self._fps = min(fps, 60.0)
+                    h, w = frame.shape[:2]
+                    mc.log(f"[source] 网络流就绪（后端 {label}）：{w}x{h}，驱动帧率 {self._fps:.1f}")
+                    return
+            cap.release()
+        raise RuntimeError(
+            f"打不开网络视频流：{self.url}\n"
+            f"  排查：① 手机和电脑是否同一 WiFi ② 地址是否正确（浏览器能否打开它）"
+            f" ③ Windows 防火墙是否允许 ④ app 里的服务是否已启动"
+        )
+
+    def read(self):
+        ok, frame = self._cap.read()
+        return ok, (frame if ok else None)
+
+    def release(self) -> None:
+        if self._cap is not None:
+            self._cap.release()
+
+
 class GlassesSource(FrameSource):
     """眼镜源占位：真机 SDK 到位后实现（回调 → 内部队列 → read()）。
 
@@ -197,6 +247,8 @@ class GlassesSource(FrameSource):
 def build_source(args) -> FrameSource:
     if args.source == "cam":
         return WebcamSource(args.index, args.width, args.height)
+    if args.source == "url":
+        return NetworkStreamSource(args.input, fps=args.source_fps)
     return VideoFileSource(args.input, loop=not args.no_loop, fps=args.source_fps)
 
 
@@ -977,6 +1029,39 @@ def probe_cameras(max_index: int = 4) -> int:
     return 0 if found else 1
 
 
+def probe_stream(url: str, n: int = 5) -> int:
+    """探测网络视频流：连上后读几帧，只报告分辨率/亮度/帧率（不落盘）"""
+    mc.log("=" * 74)
+    mc.log(f"网络流探测：{url}")
+    src = NetworkStreamSource(url)
+    try:
+        src.open()
+    except Exception as exc:
+        mc.log(f"  连接失败：{exc}")
+        return 1
+    frames, t0, bright = 0, time.perf_counter(), []
+    for _ in range(n):
+        ok, frame = src.read()
+        if not ok or frame is None:
+            continue
+        frames += 1
+        bright.append(float(frame.mean()))
+    dt = time.perf_counter() - t0
+    src.release()
+    if frames == 0:
+        mc.log("  连上了但读不到帧：检查 app 是否在推流、地址是否为 /video 之类的流地址")
+        return 1
+    h, w = frame.shape[:2]
+    fps = frames / dt if dt > 0 else 0.0
+    m = sum(bright) / len(bright)
+    mc.log(f"  OK  {w}x{h}  平均亮度 {m:.1f}{'（偏暗，注意补光）' if m < 30 else ''}"
+           f"  读取 {frames}/{n} 帧，约 {fps:.1f} fps")
+    if w < 640:
+        mc.log("  提示：分辨率偏低，拍屏时细节可能不足，检测容易失败")
+    mc.log("=" * 74)
+    return 0
+
+
 # ===========================================================================
 # 七、CLI
 # ===========================================================================
@@ -991,8 +1076,9 @@ def parse_args(argv=None):
             "--input data/samples/acdc --max-frames 60 --no-show --save-frames\n"
             "  真实摄像头: python client/live_client.py --source cam --fps 5 --save-frames\n"
         ))
-    p.add_argument("--source", choices=["video", "cam", "glasses"], default="video",
-                   help="采集源：video=视频/帧目录（自动化），cam=摄像头（默认 video）")
+    p.add_argument("--source", choices=["video", "cam", "url", "glasses"], default="video",
+                   help="采集源：video=视频/帧目录（自动化），cam=本机摄像头，"
+                        "url=网络视频流（手机 IP Webcam 当模拟眼镜）；默认 video")
     p.add_argument("--input", default="data/samples/acdc", help="video 源的输入路径（mp4 或帧目录）")
     p.add_argument("--audio", default="", help="启动时先发这段 wav 设置分割目标（A2，契约语义：先说后看）")
     p.add_argument("--expect-overlay", action="store_true",
@@ -1036,6 +1122,8 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.probe:
+        if args.source == "url" or str(args.input).startswith(("http://", "https://", "rtsp://")):
+            return probe_stream(args.input)
         return probe_cameras()
     if args.mic_selftest > 0:
         return mic_selftest(args.mic_selftest, args.mic_device)
