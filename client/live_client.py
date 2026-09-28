@@ -194,16 +194,39 @@ class NetworkStreamSource(FrameSource):
 
     name = "url"
 
-    def __init__(self, url: str, fps: float = DEFAULT_SOURCE_FPS):
+    def __init__(self, url: str, fps: float = DEFAULT_SOURCE_FPS, max_retry: int = 3):
         self.url = url if url.startswith(("http://", "https://", "rtsp://", "rtmp://")) \
             else f"http://{url}"
         self._fps = fps
         self._cap = None
+        self.max_retry = max_retry       # 断流后最多重试几次（每次退避 0.4~2s）
+        self.reconnects = 0              # 成功重连次数（写进报告，便于发现手机端抖动）
+        self.open_timeout_ms = 2000      # 打开超时（不设的话死地址要 ~20s 才失败）
+        self.read_timeout_ms = 3000      # 读取超时
 
-    def open(self) -> None:
-        # MJPEG 走 FFMPEG 后端最稳；失败再退回默认后端
+    def _close(self) -> None:
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+
+    def _try_open(self, quiet: bool) -> bool:
+        """按 FFMPEG → ANY 顺序尝试打开并读到第一帧。
+
+        带打开/读取超时（实测不设超时时，死地址要 ~20s 才失败 → 重试几次就像"卡死"）。
+        """
+        params = [int(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC), self.open_timeout_ms,
+                  int(cv2.CAP_PROP_READ_TIMEOUT_MSEC), self.read_timeout_ms]
         for backend, label in ((cv2.CAP_FFMPEG, "FFMPEG"), (cv2.CAP_ANY, "ANY")):
-            cap = cv2.VideoCapture(self.url, backend)
+            try:
+                cap = cv2.VideoCapture(self.url, backend, params)
+            except Exception:                     # 个别后端不认 params，退回不带超时
+                try:
+                    cap = cv2.VideoCapture(self.url, backend)
+                except Exception:
+                    continue
             if cap.isOpened():
                 ok, frame = cap.read()
                 if ok and frame is not None:
@@ -212,18 +235,49 @@ class NetworkStreamSource(FrameSource):
                     if fps and fps > 0:
                         self._fps = min(fps, 60.0)
                     h, w = frame.shape[:2]
-                    mc.log(f"[source] 网络流就绪（后端 {label}）：{w}x{h}，驱动帧率 {self._fps:.1f}")
-                    return
+                    if not quiet:
+                        mc.log(f"[source] 网络流就绪（后端 {label}）：{w}x{h}，"
+                               f"驱动帧率 {self._fps:.1f}")
+                    return True
             cap.release()
-        raise RuntimeError(
-            f"打不开网络视频流：{self.url}\n"
-            f"  排查：① 手机和电脑是否同一 WiFi ② 地址是否正确（浏览器能否打开它）"
-            f" ③ Windows 防火墙是否允许 ④ app 里的服务是否已启动"
-        )
+        return False
+
+    def open(self) -> None:
+        if not self._try_open(quiet=False):
+            raise RuntimeError(
+                f"打不开网络视频流：{self.url}\n"
+                f"  排查：① 手机和电脑是否同一 WiFi ② 地址是否正确（浏览器能否打开它）"
+                f" ③ Windows 防火墙是否允许 ④ app 里的服务是否已启动"
+            )
 
     def read(self):
+        if self._cap is None:
+            return False, None
         ok, frame = self._cap.read()
-        return ok, (frame if ok else None)
+        if ok and frame is not None:
+            return True, frame
+        # N4.5 现场暴露：MJPEG 流会偶发断一次（手机 app 切后台/重连、WiFi 抖动），
+        # 而 cv2 不会自己重连 → 之前整场采集就此结束（其实流还在）。
+        # 这里按退避策略自动重连，避免一次抖动毁掉整场演示。
+        return self._reconnect()
+
+    def _reconnect(self):
+        for attempt in range(1, self.max_retry + 1):
+            self._close()
+            time.sleep(min(0.4 * attempt, 2.0))
+            if not self._try_open(quiet=True):
+                continue
+            for _ in range(3):                # 重连后缓冲要一点时间
+                ok, frame = self._cap.read()
+                if ok and frame is not None:
+                    self.reconnects += 1
+                    mc.log(f"[source] 网络流已重连（第 {attempt} 次尝试，"
+                           f"累计重连 {self.reconnects} 次）")
+                    return True, frame
+                time.sleep(0.2)
+        mc.log(f"[source] 网络流重连失败（连续 {self.max_retry} 次尝试），结束采集")
+        self._close()
+        return False, None
 
     def release(self) -> None:
         if self._cap is not None:
@@ -822,6 +876,7 @@ class LiveRunner:
     def run(self) -> int:
         args = self.args
         source = build_source(args)
+        self.source = source          # 供报告展示"网络流重连次数"等源侧信息
         source.open()
         self.out_dir.mkdir(parents=True, exist_ok=True)
         if args.save_frames:
@@ -967,6 +1022,7 @@ class LiveRunner:
             "| 指标 | 数值 |",
             "|------|------|",
             f"| 采集帧数 | {self.frames_read} |",
+            f"| 网络流重连次数 | {getattr(getattr(self, 'source', None), 'reconnects', '-')} |",
             f"| 提交发帧 | {st.submitted} |",
             f"| 实际发送 | {st.sent}（被新帧覆盖丢弃 {st.dropped}） |",
             f"| 提交节奏 | {submit_fps:.2f} fps（目标 {self.args.fps:g} fps） |",
