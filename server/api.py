@@ -55,6 +55,21 @@ AUDIO_ENDPOINT = "/api/v1/audio"
 # 代价是失去跨帧传播（每帧独立分割，静态屏幕场景无影响；画面快速移动时掩膜可能抖动）。
 WINDOW_SIZE = 1
 
+# ---------------------------------------------------------------------------
+# N18（2026-09-28）：误检面积过滤阈值按模态区分
+# ---------------------------------------------------------------------------
+# 引擎的面积过滤默认 min_area_ratio=0.001（0.1% 帧面积），用于滤掉零星误检。但
+# **CT 腹部有大量小器官**：实测检出框占帧面积比 —— 主动脉 0.011%、胃 0.014~0.069%、
+# 肾 0.034~0.048%、膀胱 0.044%、脾脏标注仅 0.028%：默认阈值会把 27/28 个框当误检
+# 丢弃（Amos 脾脏检出 0/8）；关闭过滤后 8/8、Dice 0.705（见 docs/指标_分割精度_在线vs离线.md §三）。
+# 其余四模态最小也有 0.17%（息肉），不受影响。
+# 处置：按模态放宽 —— 这里只放宽 CT 腹部到 0.0001（≈20×20 px @4MP 的亚阈值碎点仍被过滤），
+# 其余模态维持 0.001，不动已验证的配置。参数由服务端传给引擎，**引擎自身不改**（红线 4）。
+DEFAULT_MIN_AREA_RATIO = 0.001
+MIN_AREA_RATIO_BY_MODALITY = {
+    "Amos (CT 腹部)": 0.0001,
+}
+
 # 假实现固定值（契约附录 A.6）
 MOCK_MODALITY = "ACDC (MRI 心脏)"
 MOCK_TARGET = "LV cavity"
@@ -492,10 +507,13 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
     #    表现为"每个会话第一帧必然返回'没检测到目标'"。这里显式传 1，让首帧即有结果。
     out_dir = STREAM_DIR / session_id / "seg"
     image_files, _ = demo.resolve_frames(fdir, out_dir)
+    # N18：面积过滤阈值按模态取（默认 0.001；CT 腹部 0.0001，否则小器官会被当误检丢弃）
+    min_area_ratio = MIN_AREA_RATIO_BY_MODALITY.get(modality, DEFAULT_MIN_AREA_RATIO)
     result = demo._segment_target(
         predictor, yolo_model, image_files, fdir, target_id,
         id_to_name, class_id_to_gray, out_dir, target,
         min_occurrence=1,
+        min_area_ratio=min_area_ratio,
     )
     # P2.12：frames_processed 语义 = "该 session 累计处理帧数"。此处（真正跑过推理
     # 的路径、且已在 per-session 串行区内）自增，被 latest-wins 丢弃的帧不计数，
