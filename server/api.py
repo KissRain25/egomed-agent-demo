@@ -282,6 +282,69 @@ def _mk_base(session_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 响应图片规格（P2.10：契约第二节 —— 长边 ≤1280、jpeg 质量 80）
+# ---------------------------------------------------------------------------
+OVERLAY_MAX_DIM = 1280               # 长边上限（px）
+OVERLAY_JPEG_QUALITY = 80            # jpeg 质量
+OVERLAY_MAX_BYTES = 300 * 1024       # 体积上限（超过才重新编码，已合规输入不重复编码）
+
+
+def _encode_overlay(raw: bytes) -> bytes:
+    """把 overlay 压到契约规格（长边 ≤1280、质量 80）。
+
+    真引擎此前直接回传原尺寸结果图（实测 723 KB~1.28 MB/帧 base64），
+    远超契约第二节规格；这里统一转 jpeg 并限制长边。解码失败则原样返回
+    —— 宁可体积大一点，也不能因压缩失败丢结果。
+    """
+    try:
+        import cv2
+        import numpy as np
+        img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return raw
+        h, w = img.shape[:2]
+        long_edge = max(h, w)
+        if long_edge > OVERLAY_MAX_DIM:
+            scale = OVERLAY_MAX_DIM / float(long_edge)
+            img = cv2.resize(
+                img, (max(1, round(w * scale)), max(1, round(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        ok, buf = cv2.imencode(
+            ".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), OVERLAY_JPEG_QUALITY])
+        return buf.tobytes() if ok else raw
+    except Exception:
+        return raw
+
+
+def _overlay_b64(raw: bytes) -> str:
+    """overlay → base64；体积超契约上限时先按规格压缩。
+
+    输入已 ≤300 KB（如假实现回传的客户端压缩帧）时直接编码，
+    省掉一次无意义的解码+重编码（约 15 ms/帧）。
+    """
+    if len(raw) > OVERLAY_MAX_BYTES:
+        raw = _encode_overlay(raw)
+    return base64.b64encode(raw).decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# 请求参数校验（P2.9：契约 §4 —— timestamp 为 Unix 毫秒整数且必填）
+# ---------------------------------------------------------------------------
+def _parse_timestamp(value: Optional[str]) -> tuple[Optional[int], str]:
+    """返回 (timestamp, err)；err 非空表示参数不合法（应返 1001）。"""
+    if value is None or str(value).strip() == "":
+        return None, "缺少 timestamp（Unix 毫秒整数）"
+    try:
+        ts = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None, f"timestamp 必须是 Unix 毫秒整数，收到 {value!r}"
+    if ts <= 0:
+        return None, "timestamp 必须是正的 Unix 毫秒整数"
+    return ts, ""
+
+
+# ---------------------------------------------------------------------------
 # 坏帧检测（P0.3：假实现补齐"画面不可用"分支，契约 A1 边界情况 1）
 # ---------------------------------------------------------------------------
 BAD_MEAN_MAX = 15.0        # 灰度均值低于此 -> 黑图/过暗
@@ -335,7 +398,7 @@ def _handle_frame_mock(session_id: str, image_bytes: bytes) -> dict:
             "message": BAD_FRAME_MESSAGE,
             "need_confirm": False, "candidates": [],
         }
-    overlay_b64 = base64.b64encode(image_bytes).decode("ascii")
+    overlay_b64 = _overlay_b64(image_bytes)
     return {
         **_mk_base(session_id),
         "modality": MOCK_MODALITY,
@@ -418,6 +481,10 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
         id_to_name, class_id_to_gray, out_dir, target,
         min_occurrence=1,
     )
+    # P2.12：frames_processed 语义 = "该 session 累计处理帧数"。此处（真正跑过推理
+    # 的路径、且已在 per-session 串行区内）自增，被 latest-wins 丢弃的帧不计数，
+    # 避免并发下多个响应返回同一个"请求时刻"计数。
+    session.frames_processed += 1
     if result["status"].startswith("未检测") or not result["overlay_files"]:
         return {
             **_mk_base(session_id),
@@ -427,7 +494,7 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
         }
 
     overlay_path = Path(result["overlay_files"][-1])
-    overlay_b64 = base64.b64encode(overlay_path.read_bytes()).decode("ascii")
+    overlay_b64 = _overlay_b64(overlay_path.read_bytes())
     return {
         **_mk_base(session_id),
         "modality": modality, "target": target,
@@ -499,10 +566,14 @@ def _handle_audio_real(session_id: str, audio_bytes: bytes, session: Session) ->
 # ---------------------------------------------------------------------------
 def handle_frame(session_id: str, image_bytes: bytes, session: Session) -> dict:
     if REAL_ENGINE:
-        # P0.1：per-session 丢帧语义（队列长度=1，新帧覆盖旧帧），不再用全局锁
+        # P0.1：per-session 丢帧语义（队列长度=1，新帧覆盖旧帧），不再用全局锁。
+        # P2.12：帧计数在 _handle_frame_real 内自增（被覆盖丢弃的帧不计数）。
         return session.submit_frame(
             image_bytes, lambda b: _handle_frame_real(session_id, b, session))
-    return _handle_frame_mock(session_id, image_bytes)
+    # 假实现没有丢帧语义：每个请求都真的处理了，处理完即计数（P2.12）
+    payload = _handle_frame_mock(session_id, image_bytes)
+    session.frames_processed += 1
+    return payload
 
 
 def handle_audio(session_id: str, audio_bytes: bytes, session: Session) -> dict:
@@ -522,12 +593,15 @@ app = FastAPI(title="EgoMed-Agent Server", version="0.2")
 @app.post(FRAME_ENDPOINT)
 async def post_frame(
     session_id: Optional[str] = Form(None),
-    timestamp: Optional[str] = Form(None),  # 契约要求，暂不使用
+    timestamp: Optional[str] = Form(None),  # 契约 §4：Unix 毫秒整数，必填（P2.9）
     image: Optional[UploadFile] = File(None),
 ):
     _cleanup_expired(time.time())
     if not session_id:
         return _error(E_PARAM, "缺少 session_id")
+    _ts, ts_err = _parse_timestamp(timestamp)   # P2.9：缺失/非整数 → 1001
+    if ts_err:
+        return _error(E_PARAM, ts_err)
     if image is None:
         return _error(E_PARAM, "缺少 image 文件")
     try:
@@ -538,7 +612,8 @@ async def post_frame(
         return _error(E_FRAME_BAD, "画面不可用，请对准屏幕")
 
     s = _get_session(session_id)
-    s.frames_processed += 1
+    # P2.12：计数改到"真正处理完该帧"的位置（真引擎在 _handle_frame_real 内、
+    # 假实现无丢帧语义在 handle_frame 内自增），此处不再按"请求到达"累加。
     t0 = time.perf_counter()
     try:
         payload = await run_in_threadpool(handle_frame, session_id, image_bytes, s)
@@ -561,12 +636,15 @@ async def post_frame(
 @app.post(AUDIO_ENDPOINT)
 async def post_audio(
     session_id: Optional[str] = Form(None),
-    timestamp: Optional[str] = Form(None),  # 契约要求，暂不使用
+    timestamp: Optional[str] = Form(None),  # 契约 §4：Unix 毫秒整数，必填（P2.9）
     audio: Optional[UploadFile] = File(None),
 ):
     _cleanup_expired(time.time())
     if not session_id:
         return _error(E_PARAM, "缺少 session_id")
+    _ts, ts_err = _parse_timestamp(timestamp)   # P2.9：缺失/非整数 → 1001
+    if ts_err:
+        return _error(E_PARAM, ts_err)
     if audio is None:
         return _error(E_PARAM, "缺少 audio 文件")
     try:
