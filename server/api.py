@@ -347,10 +347,17 @@ def _parse_timestamp(value: Optional[str]) -> tuple[Optional[int], str]:
 # ---------------------------------------------------------------------------
 # 坏帧检测（P0.3：假实现补齐"画面不可用"分支，契约 A1 边界情况 1）
 # ---------------------------------------------------------------------------
-BAD_MEAN_MAX = 15.0        # 灰度均值低于此 -> 黑图/过暗
-BAD_STD_MAX = 15.0         # 灰度标准差低于此 -> 低对比
-BAD_BLUR_LAPVAR = 80.0     # Laplacian 方差低于此 -> 模糊
-BAD_NOISE_LAPVAR = 6000.0  # Laplacian 方差高于此 -> 噪声（高频噪点）
+# N16（2026-09-28）归一化：Laplacian 方差**对分辨率极敏感** —— 同一张正常 MRI
+# 原图 lapvar≈28（旧阈值 80 → 误判"画面模糊"），客户端压到长边 1280 后 lapvar≈109
+#（判正常）：判定结果取决于"图有多大"，而不是"画面清不清楚"；mock 套件恰好全走
+# 压缩图，于是掩盖了这条局限。修法：判定前先把长边统一缩放到 BAD_NORM_DIM 再算
+# 统计量 —— 归一化后同一画面的原图/压缩版指标几乎一致（实测 ACDC 463.1 vs 464.2），
+# 阈值也才有统一的物理含义。
+BAD_NORM_DIM = 640         # 判定口径：长边统一到该尺寸后再算统计量
+BAD_MEAN_MAX = 15.0        # 灰度均值低于此 → 黑图/过暗（归一化后：坏帧 9.4 / 正常 ≥93.7）
+BAD_STD_MAX = 20.0         # 灰度标准差低于此 → 低对比（归一化后：坏帧 11.1 / 正常 ≥57.1）
+BAD_BLUR_LAPVAR = 120.0    # Laplacian 方差低于此 → 模糊（归一化后：坏帧 ≤18.8 / 正常 ≥463）
+BAD_NOISE_LAPVAR = 12000.0 # Laplacian 方差高于此 → 噪声（归一化后：正常 ≤1538 / 噪点样例 110k）
 BAD_FRAME_MESSAGE = "没看清屏幕上的影像，请对准屏幕再试一次"
 
 
@@ -358,7 +365,8 @@ def _is_bad_frame(image_bytes: bytes):
     """检测坏帧（黑图/过暗/低对比/模糊/噪声）。返回 (is_bad, reason)。
 
     缺 cv2/numpy 时按可用帧处理（避免因检测能力缺失误伤正常联调）；
-    能解码但内容不达标时才判坏帧。
+    能解码但内容不达标时才判坏帧。判定前统一归一化长边（N16），
+    使同一画面的判定不随分辨率/压缩变化。
     """
     try:
         import cv2
@@ -369,6 +377,14 @@ def _is_bad_frame(image_bytes: bytes):
     img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
     if img is None or img.size == 0:
         return True, "无法解码画面"
+    # N16：长边归一化（缩小用 INTER_AREA 保真，放大用 INTER_LINEAR 平滑）
+    h, w = img.shape[:2]
+    long_edge = max(h, w)
+    if long_edge and long_edge != BAD_NORM_DIM:
+        scale = BAD_NORM_DIM / float(long_edge)
+        img = cv2.resize(
+            img, (max(1, round(w * scale)), max(1, round(h * scale))),
+            interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR)
     mean = float(img.mean())
     std = float(img.std())
     lap_var = float(cv2.Laplacian(img, cv2.CV_64F).var())
