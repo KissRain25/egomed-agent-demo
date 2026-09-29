@@ -2,6 +2,50 @@
 
 > Code for the paper [*“Understanding From Human Perspective: A Multi-agent System for Interactive Egocentric Medical Image Segmentation”*](https://arxiv.org/abs/2607.17341).
 
+---
+
+## 本阶段实时链路：快速开始（中文速查）
+
+> 在论文复现的基础上，本仓库另做了一套**实时采集 → 分割回显**链路：用**手机 / 摄像头当"眼镜"**指向屏幕上的医学影像，
+> 医生说话定目标 → 服务端逐帧推理 → 客户端实时回显分割结果（面向"辅助阅片"场景，机位固定）。
+> **论文原版复现说明（Method / Setup / Baselines / Training 等）见本文档下方。**
+
+### 想做什么 → 怎么做
+
+| 想做什么 | 怎么做 |
+|---------|--------|
+| **一键演示**（推荐） | 双击 **`启动模拟眼镜.bat`**（自动：起服务端真引擎 → 等预热 → 打开示例影像 → 起客户端） |
+| 首次安装环境 | 双击 **`安装环境.bat`**（建 conda 环境 `egomed` → 装依赖 → 下载模型权重） |
+| 用手机当"眼镜镜头" | `启动模拟眼镜.bat --source url --input http://<手机IP>:8080/video` |
+| 自测设备 | `python client\live_client.py --probe`（摄像头）/ `--mic-selftest 3`（麦克风） |
+| 一键验收 | `python client\acceptance_test.py --suite mock`（假实现）/ `--suite real`（真引擎，需服务端在跑） |
+| 量化评估 | `client\eval_segmentation.py`（精度）/ `eval_latency.py`（延迟）/ `eval_asr.py`（语音） |
+| 合成演示视频 | `python client\make_demo_video.py`（真实链路 + HUD + 坏帧防抖段） |
+
+> **解释器解析顺序**（`启动模拟眼镜.bat` 内）：环境变量 `EGOMED_PY` → 常见 conda 路径 → PATH 中的 `python`；
+> 不再写死某一台机器的绝对路径（换机器无需改脚本）。
+
+### 文档索引
+
+| 文档 | 作用 |
+|------|------|
+| `docs/API_CONTRACT.md` | **接口契约 v1.0.3（冻结）**：字段 / HTTP 路径 / 错误码 / 生命周期 |
+| `docs/端到端流程设计.md` | 眼镜 → 服务器三层架构、数据流、模拟策略与迁移路径 |
+| `docs/总计划.md` | **任务与进度**（N1~N18）+ 子计划索引 |
+| `docs/决策记录.md` | 设计决策 D1~D14（含理由、代价、重新评估条件） |
+| `docs/失败案例分析.md` | 7 例失败（现象 → 根因 → 对策 → 现状） |
+| `docs/指标_分割精度_在线vs离线.md` | 精度量化方法（Dice/IoU，在线 vs 离线） |
+| `docs/工作日志.md` · `docs/PROGRESS.md` | 断点记录 / 成果大事记 |
+
+### 当前能力与边界（一句话）
+
+- **能做**：5 模态 24 个目标的实时分割回显｜语音切目标｜跨模态歧义主动澄清｜遮挡/坏帧防抖（保留上一帧、提示、自动恢复）｜断流自动重连｜一键验收（假实现 8/8、真引擎 11/11）。
+- **指标**：端到端延迟 **P95 ≈ 0.5 s**、结果刷新 **2~3 fps**、语音字准率 **86.6%**（52 句）。
+- **暂不支持**：AR 世界锚定（掩膜"跟手"）、一次分割多个器官、临床级精度（心肌 Dice ≈0.40）、多人并发与权限审计、患者数据管理。
+- **依赖**：真引擎需 NVIDIA GPU（开发机为 RTX 5060），启动预热约 80 秒；仅有公开数据集（ACDC / CAMUS / Amos / Montgomery / PolypGen）。
+
+---
+
 ## Demo
 
 ![EgoMed-Agent demo](assets/demo.gif)
