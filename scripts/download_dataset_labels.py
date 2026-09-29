@@ -261,6 +261,10 @@ def main() -> int:
     ap.add_argument("--reset", action="store_true", help="清空断点状态")
     ap.add_argument("--reset-dataset", nargs="*", default=None,
                     help="清掉指定数据集的分片状态（用于换抽取模式后重跑）")
+    ap.add_argument("--retry-rounds", type=int, default=3,
+                    help="失败分片的重试轮数（默认 3；每轮重扫未完成分片）")
+    ap.add_argument("--retry-pause", type=int, default=120,
+                    help="轮次之间的等待秒数（默认 120）")
     args = ap.parse_args()
 
     state = {} if args.reset else load_state()
@@ -280,35 +284,47 @@ def main() -> int:
         save_state(state)
         return 0
 
-    todo: list[tuple[str, str, str, int, int]] = []
-    for local_ds in targets:
-        remote, tmpl = DATASETS[local_ds]
-        for part_no, part_bytes, cases in fetch_part_manifest(remote):
-            done = state.get(local_ds, {}).get(f"part_{part_no:03d}", {}).get("done", False)
-            tag = "已完成" if done else "待下载"
-            print(f"  {local_ds:<38} part {part_no:03d}  {part_bytes / 1e9:.2f} GB  {cases} 病例  [{tag}]")
-            if not done:
-                todo.append((local_ds, remote, tmpl, part_no, part_bytes))
+    def collect_todo() -> list[tuple[str, str, str, int, int]]:
+        items: list[tuple[str, str, str, int, int]] = []
+        for local_ds in targets:
+            remote, tmpl = DATASETS[local_ds]
+            for part_no, part_bytes, cases in fetch_part_manifest(remote):
+                done = state.get(local_ds, {}).get(f"part_{part_no:03d}", {}).get("done", False)
+                if args.list:
+                    print(f"  {local_ds:<38} part {part_no:03d}  {part_bytes / 1e9:.2f} GB  {cases} 病例  "
+                          f"[{'已完成' if done else '待下载'}]")
+                if not done:
+                    items.append((local_ds, remote, tmpl, part_no, part_bytes))
+        return items
+
     if args.list:
+        todo = collect_todo()
         total = sum(t[4] for t in todo)
         print(f"\n待下载 {len(todo)} 个分片，合计 {total / 1e9:.1f} GB（按 2.5 MB/s 估计 ~{_fmt(total / 2.5e6)}）")
         return 0
 
-    total_bytes = sum(t[4] for t in todo)
-    print(f"\n待下载 {len(todo)} 个分片 / {total_bytes / 1e9:.1f} GB"
-          + ("（同时补全测试病例的完整帧）" if args.with_images else "") + "\n", flush=True)
-    for local_ds, remote, tmpl, part_no, part_bytes in todo:
-        try:
-            info = run_part(local_ds, remote, tmpl, part_no, part_bytes,
-                            needed_cases=needed_by_ds.get(local_ds, set()),
-                            save_images=args.with_images)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [part {part_no:03d}] 失败：{type(exc).__name__}: {str(exc)[:200]}", flush=True)
-            continue
-        state.setdefault(local_ds, {})[f"part_{part_no:03d}"] = info
-        save_state(state)
+    for round_no in range(1, max(1, args.retry_rounds) + 1):
+        todo = collect_todo()
+        if not todo:
+            break
+        total_bytes = sum(t[4] for t in todo)
+        print(f"\n=== 第 {round_no}/{args.retry_rounds} 轮：待下载 {len(todo)} 个分片 / {total_bytes / 1e9:.1f} GB"
+              + ("（同时补全测试病例的完整帧）" if args.with_images else "") + " ===", flush=True)
+        for local_ds, remote, tmpl, part_no, part_bytes in todo:
+            try:
+                info = run_part(local_ds, remote, tmpl, part_no, part_bytes,
+                                needed_cases=needed_by_ds.get(local_ds, set()),
+                                save_images=args.with_images)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [part {part_no:03d}] 失败：{type(exc).__name__}: {str(exc)[:200]}", flush=True)
+                continue
+            state.setdefault(local_ds, {})[f"part_{part_no:03d}"] = info
+            save_state(state)
+        if round_no < args.retry_rounds and collect_todo():
+            print(f"  本轮有失败分片，{args.retry_pause}s 后进入下一轮重试", flush=True)
+            time.sleep(args.retry_pause)
 
-    print("\n全部完成。各数据集覆盖率：", flush=True)
+    print("\n各数据集覆盖率：", flush=True)
     sched = load_needed_cases(with_frames=True)
     for local_ds in DATASETS:
         lab = DATA_ROOT / local_ds / "label"
