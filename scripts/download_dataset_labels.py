@@ -1,0 +1,325 @@
+"""从 Hugging Face 数据集分片（tar）中**流式抽取 GT 标注**，跳过图像正文。
+
+背景（2026-09-29 复现补跑）：
+    `daizywang/EgoMed-IEMIS` 数据集以 ~4 GB 未压缩 tar 分片发布
+    （`data/<REMOTE>/parts/<NAME>_part_%03d.tar`），成员为
+    `<本地数据集名>/img/<病例>/*.jpg` 与 `<本地数据集名>/label/<病例>/*.png`。
+    本机只有 ACDC 全量标注 + Amos 2 个病例，其余数据集缺 GT，无法算 Dice。
+
+策略：
+    整片下载不现实（合计 ~94 GB / 2~3 MB/s ≈ 10 小时），而标注 PNG 仅 ~10 KB/张。
+    因此边下载边用 tarfile 流式解析，**只落盘 `label/` 成员**，图像字节直接丢弃；
+    不保存 tar 本体，磁盘占用仅标注体积（每数据集几十 MB）。
+
+用法：
+    python scripts/download_dataset_labels.py --list
+    python scripts/download_dataset_labels.py --datasets Montgomery-County-CXR-Set
+    python scripts/download_dataset_labels.py                      # 默认全部缺标注的数据集
+    python scripts/download_dataset_labels.py --from-local-part D:\\path\\to\\part_004.tar
+断点续传：`data/_labels_download_state.json` 记录已完成分片，重跑自动跳过。
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import os
+import sys
+import tarfile
+import time
+from pathlib import Path
+
+import requests
+
+REPO = "daizywang/EgoMed-IEMIS"
+ENDPOINT = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
+REPO_ROOT = Path(os.environ.get("EGOMED_ROOT") or Path(__file__).resolve().parents[1])
+DATA_ROOT = REPO_ROOT / "data"
+STATE_FILE = DATA_ROOT / "_labels_download_state.json"
+
+# 本地数据集名 -> (远端数据目录名, 分片文件名模板)
+DATASETS = {
+    "Montgomery-County-CXR-Set": ("Montgomery_CXR", "Montgomery_CXR_part_{n:03d}.tar"),
+    "CAMUS": ("CAMUS_US", "CAMUS_part_{n:03d}.tar"),
+    "PolypGen2021_MultiCenterData_v3": ("PolypGen_Endo", "PolypGen_Endo_part_{n:03d}.tar"),
+    "Amos": ("AMOS_CT", "Amos_part_{n:03d}.tar"),
+}
+
+
+def resolve_url(path: str) -> str:
+    return f"{ENDPOINT}/datasets/{REPO}/resolve/main/{path}"
+
+
+SCHEDULE = DATA_ROOT / "text_prompt_eval" / "egomed5_test_prompt_schedule.csv"
+
+
+def load_needed_cases(with_frames: bool = False):
+    """从评测计划表读**测试病例**（唯一权威来源，仓库随发布提供）。
+
+    with_frames=False -> {数据集: {病例号}}（用于决定补哪些病例的帧）
+    with_frames=True  -> {数据集: (计划帧数合计, 本地帧数合计)}（用于报告覆盖率）
+    """
+    import csv
+
+    rows = list(csv.DictReader(SCHEDULE.open(encoding="utf-8")))
+    if not with_frames:
+        out: dict[str, set[str]] = {}
+        for r in rows:
+            if r.get("prompt_type") == "exact":
+                out.setdefault(r["dataset"], set()).add(str(r["case_id"]))
+        return out
+
+    want: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        if r.get("prompt_type") != "exact":
+            continue
+        ds, case = r["dataset"], str(r["case_id"])
+        if (ds, case) in seen:
+            continue
+        seen.add((ds, case))
+        want[ds] = want.get(ds, 0) + int(float(r["num_case_frames"]))
+    have: dict[str, int] = {}
+    for ds, case in seen:
+        img = DATA_ROOT / ds / "img" / case
+        have[ds] = have.get(ds, 0) + (len(list(img.glob("*.jpg"))) if img.exists() else 0)
+    return {ds: (want.get(ds, 0), have.get(ds, 0)) for ds in want}
+
+
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def save_state(state: dict) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def fetch_part_manifest(remote: str) -> list[tuple[int, int, int]]:
+    """读取 metadata/<remote>_parts.tsv -> [(part_no, bytes, cases)]。"""
+    r = requests.get(resolve_url(f"metadata/{remote}_parts.tsv"), timeout=60)
+    r.raise_for_status()
+    rows: list[tuple[int, int, int]] = []
+    for line in r.text.splitlines()[1:]:
+        cols = line.split("\t")
+        if len(cols) >= 3:
+            rows.append((int(cols[0]), int(cols[1]), int(cols[2])))
+    return rows
+
+
+def _fmt(sec: float) -> str:
+    if sec < 60:
+        return f"{sec:.0f}s"
+    if sec < 3600:
+        return f"{sec / 60:.1f}min"
+    return f"{sec / 3600:.1f}h"
+
+
+def extract_labels_from_stream(stream: io.BufferedIOBase, local_ds: str,
+                               needed_cases: set[str] | None = None,
+                               save_images: bool = False) -> tuple[int, int, int, int]:
+    """流式解析 tar：写全部 `label/` 成员；可选补写 `img/` 成员。
+
+    背景：本机 4 个数据集的 `img/` 是**截断的下载**（每病例只有前 ~1/3 帧），
+    而评测计划表的 `num_case_frames` 是完整长度；tar 每个字节反正都要读，
+    因此顺手把**测试病例**的完整帧补下来（已存在的帧跳过，不重复写盘）。
+
+    返回 (标注文件数, 标注字节, 图像文件数, 图像字节)。
+    """
+    lab_prefix = local_ds + "/label/"
+    img_prefix = local_ds + "/img/"
+    needed = needed_cases or set()
+    n_lab = n_img = 0
+    b_lab = b_img = 0
+    tar = tarfile.open(fileobj=stream, mode="r|")   # 流式，不 seek
+    for member in tar:
+        if not member.isfile():
+            continue
+        name = member.name
+        want_label = name.startswith(lab_prefix)
+        want_image = False
+        if save_images and name.startswith(img_prefix):
+            case = name[len(img_prefix):].split("/", 1)[0]
+            want_image = case in needed
+        if not (want_label or want_image):
+            continue
+        rel = name[len(local_ds) + 1:]          # label|img/<case>/<file>
+        dst = DATA_ROOT / local_ds / rel
+        if want_image and dst.exists():         # 本地已有该帧 → 不重复写
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src = tar.extractfile(member)
+        if src is None:
+            continue
+        data = src.read()
+        dst.write_bytes(data)
+        if want_label:
+            n_lab += 1
+            b_lab += len(data)
+        else:
+            n_img += 1
+            b_img += len(data)
+    return n_lab, b_lab, n_img, b_img
+
+
+def run_part(local_ds: str, remote: str, tmpl: str, part_no: int, part_bytes: int,
+             needed_cases: set[str] | None = None, save_images: bool = False) -> dict:
+    """下载单个分片并抽取标注（可选补全测试病例的帧），不落 tar 本体。"""
+    path = f"data/{remote}/parts/{tmpl.format(n=part_no)}"
+    url = resolve_url(path)
+    t0 = time.time()
+    got = 0
+    print(f"  [part {part_no:03d}] 开始下载 {part_bytes / 1e9:.2f} GB（流式抽取标注）", flush=True)
+    with requests.get(url, stream=True, timeout=180) as r:
+        r.raise_for_status()
+        raw = r.raw
+        raw.decode_content = False
+        # 统计进度的包装流（tarfile 只按需读取）
+        class _Counter(io.RawIOBase):
+            def __init__(self, inner):
+                self.inner = inner
+                self.n = 0
+                self.t0 = time.time()
+                self.last = 0.0
+
+            def readable(self) -> bool:
+                return True
+
+            def readinto(self, b):  # type: ignore[override]
+                n = self.inner.readinto(b)
+                if n:
+                    self.n += n
+                    now = time.time()
+                    if now - self.last > 30:
+                        self.last = now
+                        el = now - self.t0
+                        speed = self.n / el / 1e6
+                        eta = (part_bytes - self.n) / (self.n / el) if self.n else 0
+                        print(f"    [part {part_no:03d}] {self.n / 1e9:.2f}/{part_bytes / 1e9:.2f} GB "
+                              f"({self.n * 100 / max(1, part_bytes):.0f}%) {speed:.2f} MB/s 剩余 ~{_fmt(eta)}",
+                              flush=True)
+                return n
+
+            def read(self, size=-1):  # type: ignore[override]
+                b = self.inner.read(size)
+                if b:
+                    self.n += len(b)
+                return b
+
+        counter = _Counter(raw)
+        buffered = io.BufferedReader(counter, buffer_size=1024 * 1024)
+        n_lab, b_lab, n_img, b_img = extract_labels_from_stream(
+            buffered, local_ds, needed_cases=needed_cases, save_images=save_images)
+        got = counter.n
+    dt = time.time() - t0
+    print(f"  [part {part_no:03d}] 完成：读过 {got / 1e9:.2f} GB，落盘标注 {n_lab} 个 / {b_lab / 1e6:.1f} MB"
+          + (f"，补帧 {n_img} 张 / {b_img / 1e6:.1f} MB" if save_images else "")
+          + f"，耗时 {_fmt(dt)}（{got / max(dt, 1e-6) / 1e6:.2f} MB/s）", flush=True)
+    return {"done": True, "files": n_lab, "label_bytes": b_lab,
+            "images": n_img, "image_bytes": b_img,
+            "read_bytes": got, "seconds": round(dt, 1),
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def run_from_local_tar(local_path: Path, local_ds: str) -> dict:
+    t0 = time.time()
+    with tarfile.open(local_path, mode="r:") as tar:
+        written = 0
+        out_bytes = 0
+        prefix = local_ds + "/label/"
+        for member in tar:
+            if not member.isfile() or not member.name.startswith(prefix):
+                continue
+            rel = member.name[len(local_ds) + 1:]
+            dst = DATA_ROOT / local_ds / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src = tar.extractfile(member)
+            if src is None:
+                continue
+            data = src.read()
+            dst.write_bytes(data)
+            written += 1
+            out_bytes += len(data)
+    print(f"  本地分片 {local_path.name}: 落盘标注 {written} 个 / {out_bytes / 1e6:.1f} MB，耗时 {_fmt(time.time() - t0)}",
+          flush=True)
+    return {"done": True, "files": written, "label_bytes": out_bytes, "source": "local"}
+
+
+def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser(description="从 HF 数据集分片流式抽取 GT 标注")
+    ap.add_argument("--datasets", nargs="*", default=None, help="本地数据集名（默认全部）")
+    ap.add_argument("--list", action="store_true", help="只列出分片与状态")
+    ap.add_argument("--from-local-part", default=None, help="从已下载的本地 tar 抽取（需配合 --datasets 指定单个数据集）")
+    ap.add_argument("--with-images", action="store_true",
+                    help="同时补全**测试病例**的完整帧（本地 img 被截断时用；已存在的帧跳过）")
+    ap.add_argument("--reset", action="store_true", help="清空断点状态")
+    ap.add_argument("--reset-dataset", nargs="*", default=None,
+                    help="清掉指定数据集的分片状态（用于换抽取模式后重跑）")
+    args = ap.parse_args()
+
+    state = {} if args.reset else load_state()
+    for ds in (args.reset_dataset or []):
+        if ds in state:
+            state.pop(ds)
+            print(f"[reset] 已清除 {ds} 的分片状态，将重新下载")
+    if args.reset_dataset:
+        save_state(state)
+    targets = args.datasets or list(DATASETS)
+    needed_by_ds = load_needed_cases() if args.with_images else {}
+
+    if args.from_local_part:
+        local_ds = targets[0]
+        info = run_from_local_tar(Path(args.from_local_part), local_ds)
+        state.setdefault(local_ds, {})["local_" + Path(args.from_local_part).stem] = info
+        save_state(state)
+        return 0
+
+    todo: list[tuple[str, str, str, int, int]] = []
+    for local_ds in targets:
+        remote, tmpl = DATASETS[local_ds]
+        for part_no, part_bytes, cases in fetch_part_manifest(remote):
+            done = state.get(local_ds, {}).get(f"part_{part_no:03d}", {}).get("done", False)
+            tag = "已完成" if done else "待下载"
+            print(f"  {local_ds:<38} part {part_no:03d}  {part_bytes / 1e9:.2f} GB  {cases} 病例  [{tag}]")
+            if not done:
+                todo.append((local_ds, remote, tmpl, part_no, part_bytes))
+    if args.list:
+        total = sum(t[4] for t in todo)
+        print(f"\n待下载 {len(todo)} 个分片，合计 {total / 1e9:.1f} GB（按 2.5 MB/s 估计 ~{_fmt(total / 2.5e6)}）")
+        return 0
+
+    total_bytes = sum(t[4] for t in todo)
+    print(f"\n待下载 {len(todo)} 个分片 / {total_bytes / 1e9:.1f} GB"
+          + ("（同时补全测试病例的完整帧）" if args.with_images else "") + "\n", flush=True)
+    for local_ds, remote, tmpl, part_no, part_bytes in todo:
+        try:
+            info = run_part(local_ds, remote, tmpl, part_no, part_bytes,
+                            needed_cases=needed_by_ds.get(local_ds, set()),
+                            save_images=args.with_images)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [part {part_no:03d}] 失败：{type(exc).__name__}: {str(exc)[:200]}", flush=True)
+            continue
+        state.setdefault(local_ds, {})[f"part_{part_no:03d}"] = info
+        save_state(state)
+
+    print("\n全部完成。各数据集覆盖率：", flush=True)
+    sched = load_needed_cases(with_frames=True)
+    for local_ds in DATASETS:
+        lab = DATA_ROOT / local_ds / "label"
+        img = DATA_ROOT / local_ds / "img"
+        n_cases = len(list(lab.iterdir())) if lab.exists() else 0
+        n_files = sum(1 for _ in lab.rglob("*.png")) if lab.exists() else 0
+        want, have = sched.get(local_ds, (0, 0))
+        print(f"  {local_ds:<38} 标注 {n_cases:4d} 病例 / {n_files:6d} 文件；"
+              f"测试病例帧 {have}/{want}" + ("（齐全）" if want and have >= want else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
