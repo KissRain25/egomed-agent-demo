@@ -63,7 +63,7 @@ class _RangeReader(io.RawIOBase):
     """
 
     def __init__(self, url: str, total: int, chunk: int = 8 << 20, workers: int = 4,
-                 retries: int = 8, timeout: int = 120):
+                 retries: int = 25, timeout: int = 120):
         self.url = url
         self.total = total
         self.chunk = chunk
@@ -101,7 +101,7 @@ class _RangeReader(io.RawIOBase):
             except Exception as exc:  # noqa: BLE001
                 last = type(exc).__name__
                 self.n_retry += 1
-            time.sleep(min(20, 2 * (attempt + 1)))
+            time.sleep(min(30, 2 * (attempt + 1)))
         raise OSError(f"Range 读取失败（{start}-{end}/{self.total}）：{last}")
 
     def _fill_window(self) -> None:
