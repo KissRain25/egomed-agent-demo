@@ -75,6 +75,29 @@ def test_cases(dataset: str) -> dict[str, int]:
     return out
 
 
+# 各数据集的分片总数（来自远端 metadata/<DS>_parts.tsv）。用于判定"数据能拿到的都拿到了"。
+EXPECTED_PARTS = {
+    "Montgomery-County-CXR-Set": 4,
+    "CAMUS": 7,
+    "PolypGen2021_MultiCenterData_v3": 7,
+    "Amos": 8,
+}
+
+
+def all_parts_done(dataset: str) -> bool:
+    """下载断点状态里该数据集的分片是否全部完成。"""
+    state_file = DATA_ROOT / "_labels_download_state.json"
+    if not state_file.exists():
+        return False
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    parts = state.get(dataset, {})
+    done = sum(1 for v in parts.values() if isinstance(v, dict) and v.get("done"))
+    return done >= EXPECTED_PARTS.get(dataset, 10 ** 6)
+
+
 def readiness(dataset: str) -> tuple[int, int]:
     """返回 (就绪病例数, 总病例数)。"""
     want = test_cases(dataset)
@@ -192,9 +215,15 @@ def main() -> int:
             continue
 
         if ready < total:
-            log(f"{ds} 数据未齐（{ready}/{total} 病例：标注+完整帧），{args.poll}s 后再查")
-            time.sleep(args.poll)
-            continue
+            # 例外：分片已全部下完但发布数据本身不含某些测试病例（如 Amos 只发布 24/49），
+            # 此时按"可拿到的都拿到了"处理——用可用子集评测，并在日志里显式标注。
+            if all_parts_done(ds) and ready > 0:
+                log(f"{ds} 分片已全部下载，但发布数据只含 {ready}/{total} 个测试病例"
+                    f"（其余病例 GT 未随数据集发布）→ 按可用子集 {ready} 例评测")
+            else:
+                log(f"{ds} 数据未齐（{ready}/{total} 病例：标注+完整帧），{args.poll}s 后再查")
+                time.sleep(args.poll)
+                continue
 
         for attempt in (1, 2, 3):
             if run_one(ds, attempt):

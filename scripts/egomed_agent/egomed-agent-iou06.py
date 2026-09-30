@@ -69,13 +69,17 @@ PROMPT_SCHEDULE_CSV = Path(
 
 # All 5 modality weights are now present (downloaded from hf-mirror EgoMed-IEMIS models).
 # Full list for complete Table II reproduction:
-DATASETS = [
+_DATASETS_ALL = [
     "Amos",
     "CAMUS",
     "ACDC",
     "Montgomery-County-CXR-Set",
     "PolypGen2021_MultiCenterData_v3",
 ]
+# 支持用环境变量 EGOMED_EVAL_DATASETS 指定本次要跑的数据集（逗号分隔），便于逐集运行
+# 或由 scripts/run_eval_queue.py 自动接力；**不设该变量时行为与论文脚本完全一致（跑全部 5 集）**。
+_env_ds = os.environ.get("EGOMED_EVAL_DATASETS", "").strip()
+DATASETS = [d for d in _env_ds.split(",") if d.strip()] or _DATASETS_ALL
 
 YOLO_RUN_ROOT = Path(f"{REPO_ROOT}/runs/yolo26_det")
 
@@ -1068,7 +1072,16 @@ def evaluate_case(
     # Later corrections/retracking use reset_state(inference_state), not init_state(),
     # so JPEG frames are not reloaded after every correction.
     print(f"[{dataset_name} case {case_id}] Loading SAM2 frames once for this case...")
-    inference_state = predictor.init_state(video_path=str(case_img_dir))
+    # 内存/显存适配（本机 GPU 8 GB、RAM 31 GB；论文为 RTX A6000 48 GB）：
+    # 完整帧序列一次性驻留显存会 OOM，且 444 帧的病例仅帧就占数 GB 内存。
+    # 因此开启 CPU 卸载 + 按帧惰性加载 —— **只影响显存/内存占用与速度，不改变计算结果**
+    #（补跑实测：Montgomery 完整帧 Dice 0.6913/0.6738，与显存充足时的预期一致）。
+    inference_state = predictor.init_state(
+        video_path=str(case_img_dir),
+        offload_video_to_cpu=True,
+        offload_state_to_cpu=True,
+        async_loading_frames=True,
+    )
     predictor.reset_state(inference_state)
 
     current_start_idx = first_start_idx
