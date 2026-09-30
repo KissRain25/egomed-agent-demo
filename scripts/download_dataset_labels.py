@@ -50,6 +50,77 @@ def resolve_url(path: str) -> str:
     return f"{ENDPOINT}/datasets/{REPO}/resolve/main/{path}"
 
 
+class _RangeReader(io.RawIOBase):
+    """按 HTTP Range 分块顺序读取远端文件，**块级自动重试**。
+
+    动机（2026-09-30）：整片 4 GB 单连接流式下载一旦中途断（ProxyError / SSLError /
+    IncompleteRead），整片就得从头再来；网络抖动时几乎无法完成。改为 8 MB 分块读取，
+    失败只重试当前块（最多 retries 次，指数退避），对 tarfile 表现为连续字节流。
+    """
+
+    def __init__(self, url: str, total: int, chunk: int = 8 << 20, retries: int = 8,
+                 timeout: int = 120):
+        self.url = url
+        self.total = total
+        self.chunk = chunk
+        self.retries = retries
+        self.timeout = timeout
+        self.pos = 0            # 下一个要请求的远端偏移（= 已成功读取的字节数）
+        self.buf = b""
+        self.buf_off = 0
+        self.n_read = 0         # 对本地的累计输出字节
+        self.n_retry = 0
+
+    def readable(self) -> bool:  # noqa: D102
+        return True
+
+    def _fill(self) -> bool:
+        if self.buf_off < len(self.buf):
+            return True
+        if self.pos >= self.total:
+            return False
+        end = min(self.pos + self.chunk, self.total) - 1
+        last = "?"
+        for attempt in range(self.retries):
+            try:
+                r = requests.get(self.url, headers={"Range": f"bytes={self.pos}-{end}"},
+                                 timeout=self.timeout)
+                if r.status_code in (200, 206) and r.content:
+                    self.buf = r.content
+                    self.buf_off = 0
+                    self.pos += len(r.content)
+                    return True
+                last = f"HTTP {r.status_code}"
+            except Exception as exc:  # noqa: BLE001
+                last = type(exc).__name__
+                self.n_retry += 1
+            time.sleep(min(20, 2 * (attempt + 1)))
+        raise OSError(f"Range 读取失败（偏移 {self.pos}/{self.total}）：{last}")
+
+    def readinto(self, b):  # type: ignore[override]
+        if not self._fill():
+            return 0
+        n = min(len(b), len(self.buf) - self.buf_off)
+        b[:n] = self.buf[self.buf_off:self.buf_off + n]
+        self.buf_off += n
+        self.n_read += n
+        return n
+
+    def read(self, size=-1):  # type: ignore[override]
+        out = bytearray()
+        if size is None or size < 0:
+            while self._fill():
+                out += self.buf[self.buf_off:]
+                self.buf_off = len(self.buf)
+        else:
+            while len(out) < size and self._fill():
+                n = min(size - len(out), len(self.buf) - self.buf_off)
+                out += self.buf[self.buf_off:self.buf_off + n]
+                self.buf_off += n
+        self.n_read += len(out)
+        return bytes(out)
+
+
 SCHEDULE = DATA_ROOT / "text_prompt_eval" / "egomed5_test_prompt_schedule.csv"
 
 
@@ -173,56 +244,57 @@ def run_part(local_ds: str, remote: str, tmpl: str, part_no: int, part_bytes: in
     path = f"data/{remote}/parts/{tmpl.format(n=part_no)}"
     url = resolve_url(path)
     t0 = time.time()
-    got = 0
-    print(f"  [part {part_no:03d}] 开始下载 {part_bytes / 1e9:.2f} GB（流式抽取标注）", flush=True)
-    with requests.get(url, stream=True, timeout=180) as r:
-        r.raise_for_status()
-        raw = r.raw
-        raw.decode_content = False
-        # 统计进度的包装流（tarfile 只按需读取）
-        class _Counter(io.RawIOBase):
-            def __init__(self, inner):
-                self.inner = inner
-                self.n = 0
-                self.t0 = time.time()
-                self.last = 0.0
+    print(f"  [part {part_no:03d}] 开始下载 {part_bytes / 1e9:.2f} GB（分块流式抽取，块级自动重试）",
+          flush=True)
+    reader = _RangeReader(url, total=part_bytes)
 
-            def readable(self) -> bool:
-                return True
+    class _Progress(io.RawIOBase):
+        """包装 _RangeReader，每 30 秒打印进度与 ETA（tarfile 只按需读取）。"""
 
-            def readinto(self, b):  # type: ignore[override]
-                n = self.inner.readinto(b)
-                if n:
-                    self.n += n
-                    now = time.time()
-                    if now - self.last > 30:
-                        self.last = now
-                        el = now - self.t0
-                        speed = self.n / el / 1e6
-                        eta = (part_bytes - self.n) / (self.n / el) if self.n else 0
-                        print(f"    [part {part_no:03d}] {self.n / 1e9:.2f}/{part_bytes / 1e9:.2f} GB "
-                              f"({self.n * 100 / max(1, part_bytes):.0f}%) {speed:.2f} MB/s 剩余 ~{_fmt(eta)}",
-                              flush=True)
-                return n
+        def __init__(self, inner: _RangeReader):
+            self.inner = inner
+            self.t0 = time.time()
+            self.last = 0.0
 
-            def read(self, size=-1):  # type: ignore[override]
-                b = self.inner.read(size)
-                if b:
-                    self.n += len(b)
-                return b
+        def readable(self) -> bool:
+            return True
 
-        counter = _Counter(raw)
-        buffered = io.BufferedReader(counter, buffer_size=1024 * 1024)
-        n_lab, b_lab, n_img, b_img = extract_labels_from_stream(
-            buffered, local_ds, needed_cases=needed_cases, save_images=save_images)
-        got = counter.n
+        def readinto(self, b):  # type: ignore[override]
+            n = self.inner.readinto(b)
+            self._tick()
+            return n
+
+        def read(self, size=-1):  # type: ignore[override]
+            data = self.inner.read(size)
+            self._tick()
+            return data
+
+        def _tick(self) -> None:
+            n = self.inner.n_read
+            now = time.time()
+            if n <= 0 or now - self.last < 30:
+                return
+            self.last = now
+            el = now - self.t0
+            speed = n / el / 1e6
+            eta = (self.inner.total - n) / (n / el) if n else 0
+            extra = f"（块重试 {self.inner.n_retry} 次）" if self.inner.n_retry else ""
+            print(f"    [part {part_no:03d}] {n / 1e9:.2f}/{self.inner.total / 1e9:.2f} GB "
+                  f"({n * 100 / max(1, self.inner.total):.0f}%) {speed:.2f} MB/s 剩余 ~{_fmt(eta)}{extra}",
+                  flush=True)
+
+    buffered = io.BufferedReader(_Progress(reader), buffer_size=1024 * 1024)
+    n_lab, b_lab, n_img, b_img = extract_labels_from_stream(
+        buffered, local_ds, needed_cases=needed_cases, save_images=save_images)
+    got = reader.n_read
     dt = time.time() - t0
     print(f"  [part {part_no:03d}] 完成：读过 {got / 1e9:.2f} GB，落盘标注 {n_lab} 个 / {b_lab / 1e6:.1f} MB"
           + (f"，补帧 {n_img} 张 / {b_img / 1e6:.1f} MB" if save_images else "")
-          + f"，耗时 {_fmt(dt)}（{got / max(dt, 1e-6) / 1e6:.2f} MB/s）", flush=True)
+          + f"，耗时 {_fmt(dt)}（{got / max(dt, 1e-6) / 1e6:.2f} MB/s，块重试 {reader.n_retry} 次）",
+          flush=True)
     return {"done": True, "files": n_lab, "label_bytes": b_lab,
             "images": n_img, "image_bytes": b_img,
-            "read_bytes": got, "seconds": round(dt, 1),
+            "read_bytes": got, "seconds": round(dt, 1), "chunk_retries": reader.n_retry,
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 
