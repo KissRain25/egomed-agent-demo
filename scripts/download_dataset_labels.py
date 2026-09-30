@@ -26,7 +26,9 @@ import json
 import os
 import sys
 import tarfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
@@ -51,51 +53,84 @@ def resolve_url(path: str) -> str:
 
 
 class _RangeReader(io.RawIOBase):
-    """按 HTTP Range 分块顺序读取远端文件，**块级自动重试**。
+    """按 HTTP Range 分块读取远端文件，**块级自动重试 + 并发预取**。
 
-    动机（2026-09-30）：整片 4 GB 单连接流式下载一旦中途断（ProxyError / SSLError /
-    IncompleteRead），整片就得从头再来；网络抖动时几乎无法完成。改为 8 MB 分块读取，
-    失败只重试当前块（最多 retries 次，指数退避），对 tarfile 表现为连续字节流。
+    动机（2026-09-30）：
+      1) 整片 4 GB 单连接流式下载一旦中途断（ProxyError / SSLError / IncompleteRead），
+         整片就得从头再来；网络抖动时几乎无法完成 → 改为 8 MB 分块，失败只重试当前块。
+      2) 单流实测仅 0.85 MB/s，而 4 并发聚合 1.41 MB/s（链路瓶颈但并发仍有收益）→
+         用线程池**乱序预取、顺序交付**（对 tarfile 表现为连续字节流）。
     """
 
-    def __init__(self, url: str, total: int, chunk: int = 8 << 20, retries: int = 8,
-                 timeout: int = 120):
+    def __init__(self, url: str, total: int, chunk: int = 8 << 20, workers: int = 4,
+                 retries: int = 8, timeout: int = 120):
         self.url = url
         self.total = total
         self.chunk = chunk
+        self.workers = max(1, workers)
         self.retries = retries
         self.timeout = timeout
-        self.pos = 0            # 下一个要请求的远端偏移（= 已成功读取的字节数）
         self.buf = b""
         self.buf_off = 0
-        self.n_read = 0         # 对本地的累计输出字节
+        self.n_read = 0         # 对本地累计输出字节
+        self.n_bytes = 0        # 已抓取字节
         self.n_retry = 0
+        self._next_submit = 0
+        self._queue: list = []
+        self._local = threading.local()
+        self._exec = ThreadPoolExecutor(max_workers=self.workers)
+        self._fill_window()
 
-    def readable(self) -> bool:  # noqa: D102
-        return True
+    # -- 内部：连接复用（每线程一个 Session） --------------------------------
+    def _session(self) -> requests.Session:
+        sess = getattr(self._local, "sess", None)
+        if sess is None:
+            sess = requests.Session()
+            self._local.sess = sess
+        return sess
 
-    def _fill(self) -> bool:
-        if self.buf_off < len(self.buf):
-            return True
-        if self.pos >= self.total:
-            return False
-        end = min(self.pos + self.chunk, self.total) - 1
+    def _fetch(self, start: int, end: int) -> bytes:
         last = "?"
         for attempt in range(self.retries):
             try:
-                r = requests.get(self.url, headers={"Range": f"bytes={self.pos}-{end}"},
-                                 timeout=self.timeout)
+                r = self._session().get(
+                    self.url, headers={"Range": f"bytes={start}-{end}"}, timeout=self.timeout)
                 if r.status_code in (200, 206) and r.content:
-                    self.buf = r.content
-                    self.buf_off = 0
-                    self.pos += len(r.content)
-                    return True
+                    return r.content
                 last = f"HTTP {r.status_code}"
             except Exception as exc:  # noqa: BLE001
                 last = type(exc).__name__
                 self.n_retry += 1
             time.sleep(min(20, 2 * (attempt + 1)))
-        raise OSError(f"Range 读取失败（偏移 {self.pos}/{self.total}）：{last}")
+        raise OSError(f"Range 读取失败（{start}-{end}/{self.total}）：{last}")
+
+    def _fill_window(self) -> None:
+        while len(self._queue) < self.workers and self._next_submit < self.total:
+            start = self._next_submit
+            end = min(start + self.chunk, self.total) - 1
+            self._queue.append(self._exec.submit(self._fetch, start, end))
+            self._next_submit = end + 1
+
+    def _fill(self) -> bool:
+        if self.buf_off < len(self.buf):
+            return True
+        if not self._queue:
+            return False
+        fut = self._queue.pop(0)          # 先进先出 → 投递顺序 == 文件顺序
+        self.buf = fut.result()
+        self.buf_off = 0
+        self.n_bytes += len(self.buf)
+        self._fill_window()
+        return True
+
+    def readable(self) -> bool:  # noqa: D102
+        return True
+
+    def close(self) -> None:  # noqa: D102
+        try:
+            self._exec.shutdown(wait=False)
+        finally:
+            super().close()
 
     def readinto(self, b):  # type: ignore[override]
         if not self._fill():
@@ -239,14 +274,15 @@ def extract_labels_from_stream(stream: io.BufferedIOBase, local_ds: str,
 
 
 def run_part(local_ds: str, remote: str, tmpl: str, part_no: int, part_bytes: int,
-             needed_cases: set[str] | None = None, save_images: bool = False) -> dict:
+             needed_cases: set[str] | None = None, save_images: bool = False,
+             workers: int = 4) -> dict:
     """下载单个分片并抽取标注（可选补全测试病例的帧），不落 tar 本体。"""
     path = f"data/{remote}/parts/{tmpl.format(n=part_no)}"
     url = resolve_url(path)
     t0 = time.time()
-    print(f"  [part {part_no:03d}] 开始下载 {part_bytes / 1e9:.2f} GB（分块流式抽取，块级自动重试）",
-          flush=True)
-    reader = _RangeReader(url, total=part_bytes)
+    print(f"  [part {part_no:03d}] 开始下载 {part_bytes / 1e9:.2f} GB"
+          f"（分块流式抽取：{workers} 并发预取 + 块级自动重试）", flush=True)
+    reader = _RangeReader(url, total=part_bytes, workers=workers)
 
     class _Progress(io.RawIOBase):
         """包装 _RangeReader，每 30 秒打印进度与 ETA（tarfile 只按需读取）。"""
@@ -337,6 +373,8 @@ def main() -> int:
                     help="失败分片的重试轮数（默认 3；每轮重扫未完成分片）")
     ap.add_argument("--retry-pause", type=int, default=120,
                     help="轮次之间的等待秒数（默认 120）")
+    ap.add_argument("--workers", type=int, default=4,
+                    help="分块并发预取线程数（默认 4；实测单流 0.85 MB/s、4 并发 1.41 MB/s）")
     args = ap.parse_args()
 
     state = {} if args.reset else load_state()
@@ -386,7 +424,7 @@ def main() -> int:
             try:
                 info = run_part(local_ds, remote, tmpl, part_no, part_bytes,
                                 needed_cases=needed_by_ds.get(local_ds, set()),
-                                save_images=args.with_images)
+                                save_images=args.with_images, workers=args.workers)
             except Exception as exc:  # noqa: BLE001
                 print(f"  [part {part_no:03d}] 失败：{type(exc).__name__}: {str(exc)[:200]}", flush=True)
                 continue
