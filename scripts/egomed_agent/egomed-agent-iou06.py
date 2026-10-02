@@ -119,8 +119,10 @@ RUN_ROOT = (
 #   000000.jpg -> original correction frame
 #   000001.jpg -> next original frame
 # This keeps the semantics of a fresh SAM2 state while avoiding full-video reload from frame 0.
-SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache"
-CLEAR_SEGMENT_FRAME_CACHE = True
+# TEMP(2026-10-02 写序实验): 启动清理缓存(>500 项)与删除旧预测目录会触发宿主的批量删除
+# 保护而杀进程 → 实验期间改用全新缓存目录 + 跳过删除（同名文件覆盖即可，Dice 不受影响）。
+SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache_r3"
+CLEAR_SEGMENT_FRAME_CACHE = False
 USE_SYMLINK_FOR_SEGMENT_FRAMES = True
 
 # Set >0 if you want to prevent immediate repeated re-tracking.
@@ -133,8 +135,8 @@ YOLO_IMGSZ = 1024
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-OVERWRITE_PRED_MASK = True
-SAVE_OVERLAY = True
+OVERWRITE_PRED_MASK = False   # TEMP(2026-10-02 写序实验): 见上，避免累积删除触发保护
+SAVE_OVERLAY = False          # TEMP(2026-10-02 写序实验): 省磁盘（Dice 不受影响）
 
 # Overlay colors:
 #   red semi-transparent = predicted mask
@@ -731,11 +733,26 @@ def propagate_video(predictor, inference_state, start_frame_idx):
 # Mask and visualization utilities
 # ============================================================
 
+# 类别重叠消解顺序：默认 None = 原行为（按类别 id 升序写入 → **后写覆盖先写**）。
+# 可用环境变量 EGOMED_COMPOSE_ORDER 注入显式顺序做对照实验（逗号分隔的类别 id，
+# 列在后面的类别**赢下重叠区**）。例：CAMUS `0=心肌 1=LV 2=LA`，设 `1,2,0` 即让心肌最后写。
+_ORDER_ENV = os.environ.get("EGOMED_COMPOSE_ORDER", "").strip()
+COMPOSE_WRITE_ORDER: list[int] | None = (
+    [int(x) for x in _ORDER_ENV.split(",") if x.strip()] or None
+)
+
+
 def compose_pred_label(mask_by_class, class_id_to_gray, frame_shape):
     h, w = frame_shape
     pred_label = np.zeros((h, w), dtype=np.uint8)
 
-    for class_id in sorted(mask_by_class.keys()):
+    if COMPOSE_WRITE_ORDER:
+        order = [c for c in COMPOSE_WRITE_ORDER if c in mask_by_class]
+        order += [c for c in sorted(mask_by_class) if c not in order]
+    else:
+        order = sorted(mask_by_class.keys())
+
+    for class_id in order:
         if class_id not in class_id_to_gray:
             continue
 
