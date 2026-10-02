@@ -121,7 +121,7 @@ RUN_ROOT = (
 # This keeps the semantics of a fresh SAM2 state while avoiding full-video reload from frame 0.
 # TEMP(2026-10-02 写序实验): 启动清理缓存(>500 项)与删除旧预测目录会触发宿主的批量删除
 # 保护而杀进程 → 实验期间改用全新缓存目录 + 跳过删除（同名文件覆盖即可，Dice 不受影响）。
-SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache_r3"
+SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache_r4"
 CLEAR_SEGMENT_FRAME_CACHE = False
 USE_SYMLINK_FOR_SEGMENT_FRAMES = True
 
@@ -1602,9 +1602,23 @@ def main():
     all_summary = pd.concat(all_dataset_class_summaries, ignore_index=True) if all_dataset_class_summaries else pd.DataFrame()
     all_corrections = pd.concat(all_dataset_correction_logs, ignore_index=True) if all_dataset_correction_logs else pd.DataFrame()
 
-    all_summary_path = RUN_ROOT / "egomed5_all_datasets_class_summary.xlsx"
-    all_summary_csv = RUN_ROOT / "egomed5_all_datasets_class_summary.csv"
-    all_correction_csv = RUN_ROOT / "egomed5_all_datasets_reinit_correction_log.csv"
+    # SAFETY(2026-10-02): 单数据集运行时**不再覆盖**五集汇总 —— 否则一次"只跑 CAMUS"的
+    # 复跑就会把 14 行的总表冲成 3 行（本仓库曾发生，靠各数据集 class_summary.csv 重建）。
+    # 规则：跑满全部 5 个数据集（_DATASETS_ALL）才写 canonical 文件名，否则加 _partial_<n>ds 后缀。
+    _all_ds_count = len(_DATASETS_ALL)
+    is_full_run = len(DATASETS) == _all_ds_count and set(DATASETS) == set(_DATASETS_ALL)
+    if is_full_run:
+        stem = "egomed5_all_datasets_class_summary"
+        log_stem = "egomed5_all_datasets_reinit_correction_log"
+    else:
+        stem = f"egomed5_all_datasets_class_summary_partial_{len(DATASETS)}ds"
+        log_stem = f"egomed5_all_datasets_reinit_correction_log_partial_{len(DATASETS)}ds"
+        print(f"\n[SAFETY] 本次只跑了 {len(DATASETS)}/{_all_ds_count} 个数据集（{DATASETS}）→ "
+              f"汇总写入 {stem}.[csv|xlsx]（**不覆盖**五集总表；如需重建见 scripts/rebuild_all_datasets_summary.py）\n")
+
+    all_summary_path = RUN_ROOT / f"{stem}.xlsx"
+    all_summary_csv = RUN_ROOT / f"{stem}.csv"
+    all_correction_csv = RUN_ROOT / f"{log_stem}.csv"
 
     all_summary.to_excel(all_summary_path, index=False)
     all_summary.to_csv(all_summary_csv, index=False)
