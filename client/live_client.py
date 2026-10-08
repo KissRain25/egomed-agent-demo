@@ -1140,7 +1140,80 @@ def probe_stream(url: str, n: int = 5) -> int:
 # ===========================================================================
 # 七、CLI
 # ===========================================================================
+CONFIG_DEFAULT_REL = "configs/live.yaml"   # 不指定 --config 时自动读它（存在才读）
+
+
+def load_config(path: str) -> tuple[dict, str, list[str]]:
+    """读 YAML 配置（N25）。
+
+    返回 (配置字典, 实际使用的路径, 警告列表)：
+      · 未指定 path → 尝试默认路径 `configs/live.yaml`（不存在就静默跳过）
+      · 指定了 path 但读不到 / 解析失败 → 返回空配置 + 警告（由调用方打印）
+    """
+    warns: list[str] = []
+    p = Path(path) if path else (mc.PROJECT_ROOT / CONFIG_DEFAULT_REL)
+    if not p.is_absolute():
+        p = mc.PROJECT_ROOT / p
+    if not path and not p.exists():
+        return {}, "", warns
+    if not p.exists():
+        warns.append(f"配置文件不存在：{p}")
+        return {}, str(p), warns
+    try:
+        import yaml
+    except ImportError:
+        warns.append("未安装 PyYAML，--config 被忽略（pip install pyyaml）")
+        return {}, str(p), warns
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001
+        warns.append(f"配置文件解析失败：{exc}")
+        return {}, str(p), warns
+    if not isinstance(data, dict):
+        warns.append("配置文件顶层必须是键值对（dict）")
+        return {}, str(p), warns
+    return {str(k): v for k, v in data.items()}, str(p), warns
+
+
+def _apply_config_defaults(p, cfg: dict) -> tuple[list[str], list[str]]:
+    """把配置项写进 argparse 的**默认值**槽位。
+
+    这样命令行显式给出的参数仍然优先（**命令行 > 配置文件 > 内置默认**）。
+    返回 (已应用键, 未知或类型不符的键)。
+    """
+    actions = {a.dest: a for a in p._actions
+               if getattr(a, "dest", None) not in (None, "help")}
+    applied: list[str] = []
+    problems: list[str] = []
+    for key, value in cfg.items():
+        if key in ("config", "help"):
+            continue
+        act = actions.get(key)
+        if act is None:
+            problems.append(key)
+            continue
+        val = value
+        conv = getattr(act, "type", None)
+        if val is not None and callable(conv) and not isinstance(val, bool):
+            try:
+                val = conv(val)
+            except Exception:  # noqa: BLE001
+                problems.append(f"{key}(类型不匹配 {value!r})")
+                continue
+        p.set_defaults(**{key: val})
+        applied.append(key)
+    return applied, problems
+
+
 def parse_args(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # ── N25 配置文件：先看用户有没有指定 --config，再把它当"默认值"来源 ──
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--config", default="")
+    _known, _ = _pre.parse_known_args(argv)
+    _cfg, _cfg_path, _cfg_warns = load_config(_known.config)
+
     p = argparse.ArgumentParser(
         description="EgoMed-Agent 实时采集客户端（N4）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1193,8 +1266,23 @@ def parse_args(argv=None):
                    help="VAD 回放自测阈值（默认 0.005）")
     p.add_argument("--vad-send", action="store_true",
                    help="VAD 回放自测时把切出的第一段发 A2（需要服务端在跑）")
+    p.add_argument("--config", default=_known.config,
+                   help=f"配置文件（YAML）。不指定时自动读 {CONFIG_DEFAULT_REL}（存在才读）；"
+                        "配置文件只提供**默认值**，命令行参数优先")
     p.set_defaults(show=True)
-    return p.parse_args(argv)
+
+    # 配置文件 → 默认值（命令行显式给出的仍然优先）
+    _applied, _unknown = _apply_config_defaults(p, _cfg)
+    args = p.parse_args(argv)
+    args.config_path = _cfg_path if _applied else ""
+    for w in _cfg_warns:
+        mc.log(f"[config] [警告] {w}")
+    if _unknown:
+        mc.log(f"[config] [警告] 配置里这些键不认识，已忽略：{', '.join(_unknown)}")
+    if _applied:
+        mc.log(f"[config] 已加载 {_cfg_path}（{len(_applied)} 项默认值）：{', '.join(_applied)}")
+        mc.log("[config] 提示：命令行上加的参数会覆盖配置文件里的同名项")
+    return args
 
 
 def main(argv=None) -> int:

@@ -1,0 +1,45 @@
+# =============================================================================
+# EgoMed-Agent 实时客户端配置（N25）
+#
+# 用法：
+#   python client/live_client.py --config configs/live.yaml
+#   不指定 --config 时，若本文件存在会【自动加载】（方便现场"改配置不改命令行"）
+#
+# 优先级：**命令行参数 > 本文件 > 程序内置默认**
+#   例：本文件写 fps: 2，命令行再写 --fps 9 → 实际用 9
+#
+# 键名规则：参数名去掉前导 --，中间的 - 换成 _（如 --save-frames → save_frames）
+# 完整参数清单：python client/live_client.py --help
+# 未知键会被忽略并在启动时告警（不会静默生效）
+# =============================================================================
+
+# ---------- 服务器 ----------
+url: http://127.0.0.1:8000     # 服务端地址；真眼镜/手机当镜头时改成局域网 IP
+timeout: 3.0                   # 单请求超时（秒）；契约默认 3.0
+doctor: live                   # 医生编号（用于生成 session_id）
+
+# ---------- 采集源 ----------
+source: video                  # video | cam | url | glasses
+input: data/samples/acdc       # video 源：mp4 或帧目录
+                               # url  源：http://192.168.x.x:8080/video（手机 IP Webcam）
+index: 0                       # cam 源：摄像头序号
+width: 1280                    # 请求采集宽度
+height: 720                    # 请求采集高度
+source_fps: 20                 # 视频源播放节奏（模拟摄像头帧率）
+fps: 2                         # **提交节奏**。注意：结果刷新率上限由服务端单帧耗时决定
+                               # （X 光 ≈2 fps、ACDC MRI ≈0.6 fps），发得更快只会被丢帧语义覆盖
+
+# ---------- 回显 ----------
+display: result                # result=显示服务器结果图；blend=与实时画面叠加
+show: true                     # false = 无头模式（不弹窗，适合自动化/后台）
+save_frames: false             # 落盘抽样帧（每 10 个已发帧一组），便于事后读图确认
+
+# ---------- 目标与时长 ----------
+audio: ""                      # 启动时先发这段 wav 设置分割目标（A2，契约语义：先说后看）
+max_frames: 0                  # 发多少帧后停止（0 = 不限）
+duration: 0.0                  # 运行多少秒后停止（0 = 不限）
+
+# ---------- 麦克风（N4.6，说话即切换目标）----------
+mic: false                     # true = 开启实时麦克风监听
+mic_threshold: null            # 语音检测 RMS 阈值；null = 自适应（约噪声底 3 倍）
+mic_device: null               # 麦克风设备序号；null = 系统默认设备
