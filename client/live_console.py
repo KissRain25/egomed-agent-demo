@@ -233,6 +233,7 @@ class Console:
                                   state="disabled")
         self.btn_rec.pack(side="left", padx=4)
         ttk.Button(bar, text="打开输出目录", command=self.on_open_dir).pack(side="left", padx=4)
+        ttk.Button(bar, text="导出诊断包", command=self.on_diag_pack).pack(side="left", padx=4)
         ttk.Label(bar, text=f"会话 {self.session_id}").pack(side="right")
 
     # ------------------------------------------------------------ 动作
@@ -341,6 +342,19 @@ class Console:
 
         self.preflight_thread = threading.Thread(target=_work, daemon=True)
         self.preflight_thread.start()
+
+    def on_diag_pack(self) -> None:
+        """N28：一键导出诊断包（环境/配置/日志/报告/帧 → zip）。"""
+        self.var_msg.set("正在生成诊断包（约 10~20 秒）…")
+
+        def _work():
+            script = Path(__file__).resolve().parent / "make_diag_pack.py"
+            r = subprocess.run([sys.executable, str(script)], cwd=str(PROJECT_ROOT),
+                               capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            tail = [l for l in (r.stdout or "").splitlines() if l.strip()]
+            self.var_msg.set(f"诊断包：{tail[-1] if tail else f'失败（退出码 {r.returncode}）'}")
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def on_open_dir(self) -> None:
         self.out_root.mkdir(parents=True, exist_ok=True)

@@ -175,42 +175,54 @@ def main() -> int:
     log(f"EgoMed-Agent 一键回归  套件={args.suite}  服务器={url}  {stamp}")
     log("=" * 72)
 
-    proc: subprocess.Popen | None = None
-    started_by_us = False
-    h = health(url)
-    if args.no_start:
-        if not h:
-            log(f"[错误] --no-start 但 {url} 探活失败：请先启动服务端")
-            return 2
-        log(f"[1/3] 使用已有服务端（real_engine={h.get('real_engine')}）")
-    elif h:
-        log(f"[1/3] 检测到已有服务端（real_engine={h.get('real_engine')}），直接使用；本次不会关它")
-    else:
-        need_real = "real" in suites
-        log(f"[1/3] 未发现服务端 → 自动启动（{'真引擎' if need_real else '假实现'}）")
-        proc = start_server(args.port, need_real, REG_ROOT / stamp)
-        started_by_us = True
-        log("[2/3] 等待服务端就绪 …")
-        if not wait_ready(url, proc, need_real):
-            stop_server(proc)
-            return 2
-
-    # 已有服务端但套件不匹配时给出明确提示（避免 real 套件打到假实现上）
-    h2 = health(url)
-    if h2 and "real" in suites and not h2.get("real_engine"):
-        log("[警告] 当前服务端是【假实现】，real 套件需 `python server/api.py --real`")
-        log("       已自动跳过 real 套件")
-        suites = [s for s in suites if s != "real"]
-
-    log("[3/3] 开始跑用例 …")
+    # 每个套件需要**不同形态**的服务端：mock 要【假实现】、real 要【真引擎】。
+    # 所以 all 模式下逐套件"起对应形态的服务端 → 跑 → 关"，而不是共用一个。
     results: list[tuple[str, bool, Path | None, str]] = []
+    need_of = {"mock": False, "real": True}
+    started: subprocess.Popen | None = None
     try:
-        for s in suites:
+        for i, s in enumerate(suites, 1):
+            need_real = need_of[s]
+            if args.no_start:
+                h = health(url)
+                if not h:
+                    log(f"[错误] --no-start 但 {url} 探活失败：请先启动服务端")
+                    results.append((s, False, None, "服务端未就绪"))
+                    continue
+                if bool(h.get("real_engine")) != need_real:
+                    log(f"[错误] 套件 {s} 需要 real_engine={need_real}，"
+                        f"但当前服务端 real_engine={h.get('real_engine')} → 跳过（请自行换形态）")
+                    results.append((s, False, None, "服务端形态不匹配"))
+                    continue
+                log(f"[{i}/{len(suites)}] 套件 {s}：使用已有服务端"
+                    f"（real_engine={h.get('real_engine')}）")
+            else:
+                h = health(url)
+                if h:
+                    if bool(h.get("real_engine")) != need_real:
+                        log(f"[错误] 端口 {args.port} 上已有服务端（real_engine={h.get('real_engine')}），"
+                            f"但套件 {s} 需要 real_engine={need_real}。")
+                        log("       请先关掉它，或用 --no-start 自担形态匹配")
+                        results.append((s, False, None, "端口被形态不符的服务端占用"))
+                        continue
+                    log(f"[{i}/{len(suites)}] 套件 {s}：复用已有服务端"
+                        f"（real_engine={h.get('real_engine')}）")
+                else:
+                    log(f"[{i}/{len(suites)}] 套件 {s}：启动服务端"
+                        f"（{'真引擎 --real，需预热 60~90s' if need_real else '假实现'}）…")
+                    started = start_server(args.port, need_real, REG_ROOT / f"{stamp}_{s}")
+                    if not wait_ready(url, started, need_real):
+                        stop_server(started)
+                        results.append((s, False, None, "服务端未就绪"))
+                        continue
             ok, rep_dir, summary = run_suite(s, url, args)
             results.append((s, ok, rep_dir, summary))
+            if started is not None and not args.keep_server:
+                stop_server(started)
+                started = None
     finally:
-        if started_by_us and not args.keep_server:
-            stop_server(proc)
+        if started is not None and not args.keep_server:
+            stop_server(started)
 
     log("")
     log("=" * 72)

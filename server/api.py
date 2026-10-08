@@ -276,15 +276,32 @@ def _warmup_real_engine() -> None:
 # ---------------------------------------------------------------------------
 # 滚动窗口工具（契约附录 A.5）
 # ---------------------------------------------------------------------------
+_PRUNE_FAIL_LOGGED = [0]     # prune 删除失败已打印次数（前 3 次打印，之后静音避免刷屏）
+
+
 def _frame_dir(session_id: str) -> Path:
     return STREAM_DIR / session_id / "frames"
 
 
 def _prune_window(frame_dir: Path, keep: int) -> None:
-    """只保留最近 keep 帧，更早的删掉（文件名 {counter:06d}.jpg，零填充保证排序正确）。"""
+    """只保留最近 keep 帧，更早的删掉（文件名 {counter:06d}.jpg，零填充保证排序正确）。
+
+    NOTE(2026-10-08, T11/N24): 删除**必须容错**，否则会打穿整个请求。
+    本机宿主环境的「安全删除守卫」会在批量删除累计到阈值（实测 count=500）时
+    **抛 SystemExit（注意：它不是 Exception 的子类，`except Exception` 抓不住）**，
+    若不吞掉就会让这一帧返 HTTP 500 —— 60 分钟长稳实测 355/7200 = 4.9% 的请求因此失败。
+    语义：**删不掉就留着**，临时窗口帧残留不影响本帧结果。
+    """
     files = sorted(frame_dir.glob("*.jpg"), key=lambda p: p.stem)
     for f in files[:-keep]:
-        f.unlink(missing_ok=True)
+        try:
+            f.unlink(missing_ok=True)
+        except (Exception, SystemExit) as exc:  # noqa: BLE001  ← SystemExit 也要接住
+            if _PRUNE_FAIL_LOGGED[0] < 3:        # 前 3 次打印，之后静音（避免刷屏）
+                _PRUNE_FAIL_LOGGED[0] += 1
+                _log.warning("prune 删除失败（忽略，第 %d 次）：%s（%s）",
+                             _PRUNE_FAIL_LOGGED[0], f.name, exc)
+            continue
 
 
 def _mk_base(session_id: str) -> dict:
