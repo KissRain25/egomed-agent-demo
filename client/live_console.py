@@ -365,8 +365,7 @@ class Console:
         except Exception as exc:  # noqa: BLE001
             if not getattr(self, "_tick_err_logged", False):
                 self._tick_err_logged = True
-                print(f"[tick] 刷新异常（已忽略，继续刷新）：{type(exc).__name__}: {exc}",
-                      flush=True)
+                mc.log(f"[tick] 刷新异常（已忽略，继续刷新）：{type(exc).__name__}: {exc}")
         finally:
             self.root.after(UI_TICK_MS, self._tick)
 
@@ -426,6 +425,10 @@ class Console:
 
 
 def main(argv=None) -> int:
+    try:                      # .bat 启动时控制台可能是 GBK，先尽量切到 UTF-8
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
     ap = argparse.ArgumentParser(description="EgoMed-Agent 现场控制台（N26）")
     ap.add_argument("--doctor", default="console", help="医生编号（用于生成 session_id）")
     ap.add_argument("--selftest", action="store_true", help="只构建界面自检（无人值守）")
@@ -438,7 +441,7 @@ def main(argv=None) -> int:
     if args.selftest:
         root.after(600, root.destroy)
         root.mainloop()
-        print("[selftest] 界面构建与刷新正常 ✓")
+        mc.log("[selftest] 界面构建与刷新正常 ✓")
         return 0
     if args.autotest > 0:
         # 自动走一遍完整流程，最后打印指标（供无人值守验证 GUI 逻辑）
@@ -455,19 +458,19 @@ def main(argv=None) -> int:
 
             def _report() -> None:
                 if st is None:
-                    print("[autotest] 未取到指标")
+                    mc.log("[autotest] 未取到指标")
                 else:
-                    print("[autotest] 提交 %d | 已发 %d | overlay 非空 %d | P50 %.0fms P95 %.0fms | "
-                          "http 错 %d / 业务错 %d | 目标 %r"
-                          % (st.submitted, st.sent, st.overlay_nonempty, st.pct(50), st.pct(95),
-                             st.http_err, st.biz_err, st.last_target))
-                print("[autotest] UI 刷新 %d 次 / runner 非空 %d 次 / 已有 overlay %d 次 / "
-                      "拿到画面 %d 次 / 录制分支 %d 次"
-                      % (con._ticks, con._ticks_runner, con._ticks_running,
-                         con._ticks_img, con._rec_ticks))
+                    mc.log("[autotest] 提交 %d | 已发 %d | overlay 非空 %d | P50 %.0fms P95 %.0fms | "
+                           "http 错 %d / 业务错 %d | 目标 %r"
+                           % (st.submitted, st.sent, st.overlay_nonempty, st.pct(50), st.pct(95),
+                              st.http_err, st.biz_err, st.last_target))
+                mc.log("[autotest] UI 刷新 %d 次 / runner 非空 %d 次 / 已有 overlay %d 次 / "
+                       "拿到画面 %d 次 / 录制分支 %d 次"
+                       % (con._ticks, con._ticks_runner, con._ticks_running,
+                          con._ticks_img, con._rec_ticks))
                 lr = con.runner.last_result if con.runner is not None else imgref
-                print("[autotest] 收尾时 last_result = %s"
-                      % ("None" if lr is None else f"ndarray{getattr(lr, 'shape', '')}"))
+                mc.log("[autotest] 收尾时 last_result = %s"
+                       % ("None" if lr is None else f"ndarray{getattr(lr, 'shape', '')}"))
                 root.destroy()
 
             root.after(2000, _report)
