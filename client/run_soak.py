@@ -367,10 +367,15 @@ def _judge(args, rows, buckets, crashed, wall):
 
 
 def _dump(out_dir: Path, args, url, target, rows, buckets, final) -> None:
+    bad = [r for r in rows if r["err"]]
+    hist: dict[str, int] = {}
+    for r in bad:
+        hist[r["err"]] = hist.get(r["err"], 0) + 1
     data = {
         "head": {"date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "url": url,
                  "minutes": args.minutes, "fps": args.fps, "fake": args.fake,
-                 "target": target, "requests": len(rows)},
+                 "target": target, "requests": len(rows), "errors": len(bad),
+                 "error_hist": hist, "rows": rows},
         "buckets": buckets, "final": ({"verdict": final[0],
                                        "checks": [{"name": n, "pass": o, "detail": d}
                                                   for n, o, d in final[1]]} if final else None),
