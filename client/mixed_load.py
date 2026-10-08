@@ -202,18 +202,12 @@ def main() -> int:
     sids = [mc.make_session_id(f"mix{i}") for i in range(max(1, args.sessions))]
 
     # ---------- ① 设目标（没 target 服务端不跑推理，压不出争抢） ----------
-    first_name, first_wav = wavs[0]
-    mc.log(f"[1/3] 用 {first_name} 设置分割目标 …")
-    payload, elapsed, err = mc.post_audio(args.url, sids[0], first_wav, first_name, 10.0)
-    if err or not isinstance(payload, dict):
-        mc.log(f"  [错误] A2 请求失败：{err}（服务端起了吗？真引擎要用 --real）")
-        return 2
-    target = payload.get("target") or ""
+    mc.log("[1/3] 设置分割目标（逐个样例语音试，跳过歧义句）…")
+    target, used_wav, _, terr = mc.set_target(args.url, sids[0], Path(args.audio_dir), 15.0)
     if not target:
-        mc.log(f"  [错误] 未取到 target（text={payload.get('text')!r}）；"
-               f"没有目标时服务端不跑推理，复现不出超时")
+        mc.log(f"  [错误] 没能设上 target（err={terr}）（服务端起了吗？真引擎要用 --real）")
         return 2
-    mc.log(f"  [OK] target = {target!r}（{elapsed:.0f} ms）")
+    mc.log(f"  [OK] target = {target!r}（来自 {used_wav}）")
 
     # ---------- ② 单流基线（只发帧，慢速） ----------
     baseline: dict | None = None

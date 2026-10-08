@@ -111,6 +111,19 @@ def rss_mb(pid: int) -> float | None:
         return None
 
 
+def find_server_pid() -> int | None:
+    """--no-start 时，从进程表里找出服务端 PID（否则采不到 RSS）。"""
+    try:
+        import psutil  # type: ignore
+        for pr in psutil.process_iter(["pid", "cmdline"]):
+            cl = " ".join(pr.info.get("cmdline") or [])
+            if "api.py" in cl and "server" in cl:
+                return int(pr.info["pid"])
+    except Exception:
+        pass
+    return None
+
+
 def pct(xs: list[float], p: float) -> float:
     if not xs:
         return 0.0
@@ -217,15 +230,16 @@ def main() -> int:
             stop_server(proc)
             return 2
 
-    # 设目标（没 target 服务端不跑推理）
-    log("[2/3] 设置分割目标 …")
-    name = wavs[0].name if wavs else ""
-    payload, elapsed, err = mc.post_audio(url, sid, wavs[0].read_bytes(), name, 15.0) if wavs else (None, 0, "无语音样例")
-    target = (payload or {}).get("target") or ""
+    # 设目标（没 target 服务端不跑推理 → 长稳会变成无意义的空跑，必须拿到）
+    log("[2/3] 设置分割目标（逐个样例语音试，跳过歧义句）…")
+    target, used_wav, _, terr = mc.set_target(url, sid, Path(args.audio_dir), 15.0)
     if not target:
-        log(f"  [警告] 未取到 target（err={err}）—— 长稳会退化成「不推理」的空跑")
-    else:
-        log(f"  [OK] target = {target!r}（{elapsed:.0f} ms）")
+        log(f"  [错误] 没能设上 target（err={terr}）—— 没有目标时服务端不跑推理，"
+            f"长稳会空跑，已中止")
+        if started_by_us and proc is not None:
+            stop_server(proc)
+        return 2
+    log(f"  [OK] target = {target!r}（来自 {used_wav}）")
 
     # ---------- 主循环 ----------
     log(f"[3/3] 开始连续压测：{args.minutes:g} 分钟 @ {args.fps:g} fps，"
@@ -238,7 +252,11 @@ def main() -> int:
     next_t = time.perf_counter()
     last_sample = next_t
     n_bucket = 0
-    server_pid = proc.pid if proc else None
+    server_pid = proc.pid if proc else find_server_pid()
+    if server_pid:
+        log(f"  · 被采样的服务端 PID = {server_pid}（用于 RSS 曲线）")
+    else:
+        log("  · [警告] 没找到服务端 PID，本次不采 RSS")
     crashed = False
 
     try:

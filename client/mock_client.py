@@ -168,6 +168,40 @@ def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: fl
 
 
 # ---------------------------------------------------------------- 结果保存
+def set_target(url: str, session_id: str, audio_dir: Path | None = None,
+               timeout: float = 15.0, verbose: bool = True):
+    """用样例语音给会话设置分割目标（A2）。
+
+    **逐个尝试**目录里的 wav，跳过"没听清 / 跨模态歧义（need_confirm）"的，
+    返回 (target, 使用的文件名, 最后一次响应, 最后一次错误)。
+
+    为什么不能只用第一个 wav：`cmd_01.wav`（"帮我分割左心室"）在 MRI 与超声里都存在，
+    服务端按契约返 `need_confirm`、`target` 为空 —— 这是**设计**不是失败。
+    压测/长稳前必须拿到非空 target，否则服务端不跑推理（会退化成"空跑"）。
+    """
+    d = Path(audio_dir) if audio_dir else (PROJECT_ROOT / "data" / "samples" / "audio")
+    cands = sorted([p for p in d.glob("*.wav")], key=natural_key)
+    if not cands:
+        return "", "", None, f"没有可用语音样例：{d}"
+    last_payload, last_err = None, None
+    for w in cands:
+        payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, timeout)
+        last_payload, last_err = payload, err
+        if err or not isinstance(payload, dict):
+            if verbose:
+                log(f"  · {w.name} 请求失败：{err}")
+            continue
+        target = payload.get("target") or ""
+        if target:
+            if verbose:
+                log(f"  · 用 {w.name} 设目标：{target!r}"
+                    f"（text={payload.get('text')!r}，{elapsed:.0f} ms）")
+            return target, w.name, payload, None
+        if verbose:  # 多为 need_confirm（歧义）或空文本
+            log(f"  · 跳过 {w.name}：{payload.get('message') or '未取到 target'}")
+    return "", "", last_payload, last_err
+
+
 def save_result(out_dir: Path, index: int, payload: dict) -> Path | None:
     """把返回的 overlay 图落盘，同时留一份响应 JSON（剔除 base64 大字段，便于排查）"""
     out_dir.mkdir(parents=True, exist_ok=True)
