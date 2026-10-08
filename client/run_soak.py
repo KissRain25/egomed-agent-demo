@@ -88,7 +88,8 @@ def gpu_mem_mb() -> float | None:
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used",
                               "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="ignore", timeout=10)
         return float(out.stdout.strip().splitlines()[0])
     except Exception:
         return None
@@ -103,7 +104,8 @@ def rss_mb(pid: int) -> float | None:
         pass
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, timeout=10)
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="ignore", timeout=10)
         line = out.stdout.strip().splitlines()[0]
         kb = int(line.split(",")[-1].strip().strip('"').replace(" K", "").replace(",", ""))
         return round(kb / 1024, 1)

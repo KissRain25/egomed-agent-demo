@@ -28,13 +28,23 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 echo.
 
-echo [3/3] 下载模型权重（国内镜像，约 250MB）...
+echo [3/4] 下载模型权重（国内镜像，约 250MB）...
 python scripts\download_models.py
 echo.
 
+echo [4/4] 环境自检（N29）...
+python scripts\check_env.py
+echo.
+if errorlevel 1 (
+    echo [警告] 自检存在 FAIL 项，按上面 ^→ 的建议处理后，可再双击「环境自检.bat」复检
+)
+
 echo ============================================
 echo   安装完成！
-echo   以后使用：双击「启动EgoMedDemo.bat」
+echo   下一步（详见 docs\上手指南.md）：
+echo     1) 双击「环境自检.bat」确认无 FAIL
+echo     2) 双击「现场控制台.bat」跑一次（选源 -^> 点目标 -^> 开始）
+echo     3) 双击「回归.bat」做验收（mock 8/8 + real 10~11/11）
 echo ============================================
 echo.
 pause
