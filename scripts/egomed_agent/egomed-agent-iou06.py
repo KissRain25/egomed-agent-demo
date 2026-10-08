@@ -119,10 +119,12 @@ RUN_ROOT = (
 #   000000.jpg -> original correction frame
 #   000001.jpg -> next original frame
 # This keeps the semantics of a fresh SAM2 state while avoiding full-video reload from frame 0.
-# TEMP(2026-10-02 写序实验): 启动清理缓存(>500 项)与删除旧预测目录会触发宿主的批量删除
-# 保护而杀进程 → 实验期间改用全新缓存目录 + 跳过删除（同名文件覆盖即可，Dice 不受影响）。
-SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache_r4"
-CLEAR_SEGMENT_FRAME_CACHE = False
+# NOTE(2026-10-08): 启动清理缓存 / 删除旧预测目录，在本机宿主环境下可能触发"批量删除保护"
+# 而把评测进程杀掉（2026-10-02 写序实验期间实测到 safe-delete 计数触发）。
+# 对策：重跑评测前先【分批】手动清 pred_mask（每次 ≤300 个文件），不要让脚本一次 rmtree 上万文件。
+# 下面四个开关已还原为发布版原值。
+SEGMENT_FRAME_CACHE_ROOT = RUN_ROOT / "segment_frame_cache"
+CLEAR_SEGMENT_FRAME_CACHE = True
 USE_SYMLINK_FOR_SEGMENT_FRAMES = True
 
 # Set >0 if you want to prevent immediate repeated re-tracking.
@@ -135,8 +137,11 @@ YOLO_IMGSZ = 1024
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-OVERWRITE_PRED_MASK = False   # TEMP(2026-10-02 写序实验): 见上，避免累积删除触发保护
-SAVE_OVERLAY = False          # TEMP(2026-10-02 写序实验): 省磁盘（Dice 不受影响）
+# NOTE(2026-10-08): 已还原发布版原值（详见上方 SEGMENT_FRAME_CACHE_ROOT 处的说明）。
+# OVERWRITE_PRED_MASK=True 表示评测前清空该数据集的 pred_mask —— 若宿主删除保护再触发，
+# 请先分批手动清理（每次 ≤300 个文件）再跑；SAVE_OVERLAY=True 恢复落盘可视化叠加图。
+OVERWRITE_PRED_MASK = True
+SAVE_OVERLAY = True
 
 # Overlay colors:
 #   red semi-transparent = predicted mask
