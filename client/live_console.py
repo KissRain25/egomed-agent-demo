@@ -407,7 +407,8 @@ class Console:
                 f"http {st.http_err} / 业务 {st.biz_err}\n"
                 f"已提交 {st.submitted} | 已发 {st.sent} | 丢弃 {st.dropped} | "
                 f"overlay 非空 {st.overlay_nonempty} | 坏帧 {st.bad_frame} | 未设目标 {st.no_target} | "
-                f"语音 {st.voice_count}（需澄清 {st.need_confirm_count}）\n"
+                f"语音 {st.voice_count}（需澄清 {st.need_confirm_count} / "
+                f"拒识 {st.voice_rejected}）\n"
                 f"当前目标 {st.last_target or '—'} | 模态 {st.last_modality or '—'}")
             self.var_msg.set(self.runner.last_message or self.var_msg.get())
             # 画面

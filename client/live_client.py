@@ -693,7 +693,10 @@ class MicListener:
     def __init__(self, on_speech, samplerate: int = 16000, threshold: float | None = None,
                  silence_sec: float = 0.8, min_speech_sec: float = 0.4,
                  preroll_sec: float = 0.3, max_speech_sec: float = 6.0,
-                 device: int | None = None, min_interval_sec: float = 1.0):
+                 device: int | None = None, min_interval_sec: float = 1.0,
+                 min_active_ratio: float = 0.25, margin: float = 1.5,
+                 floor_min: float = 0.0012, intra_gap_sec: float = 0.25,
+                 contrast_min: float = 2.5, min_active_sec: float = 0.3):
         self.on_speech = on_speech
         self.samplerate = samplerate
         self.threshold = threshold
@@ -703,6 +706,24 @@ class MicListener:
         self.max_speech_frames = int(max_speech_sec * samplerate)
         self.device = device
         self.min_interval = min_interval_sec
+        # N37 远场/噪声门槛（两道，见 _emit）：
+        #   min_active_ratio —— 一句话里"超过阈值"的时长占比下限（瞬时尖峰占比很低 → 拒）
+        #   margin           —— 峰值必须 ≥ 判定阈值 × margin（贴边触发多是环境噪声）
+        self.min_active_ratio = float(min_active_ratio)
+        self.margin = float(margin)
+        self.floor_min = float(floor_min)                     # 自适应阈值下限（远场人声靠它）
+        self.intra_gap_frames = int(intra_gap_sec * samplerate)   # "句内停顿"上限
+        # N37 第三道门槛：**峰 / 均** ≥ contrast_min —— 用来区分「人说话」与「持续环境噪声」。
+        # 实测（见 scripts/vad_regression.py 的数据）：8 条指令 + 远场指令的峰/均是 4.0~7.9，
+        # 而持续噪声（空调）仅 1.4、远处喧哗 2.3 → 取 2.5 能干净分开。
+        self.contrast_min = float(contrast_min)
+        # N37 第四道门槛：**连续**发声时长 ≥ min_active_sec。
+        # 动机：麦克风块是 0.1s，一次 20ms 敲击就占满一个块 → 按"活跃占比"算每 0.4s 周期
+        # 能凑到 ~29%（实测 clicks.wav 就是这样蒙混过关的）。而人说话必然**连续成串**，
+        # 孤立单块不可能是说话。这条门槛直接以"最长连续活跃时长"判定。
+        self.min_active_sec = float(min_active_sec)
+        self._run_samples = 0         # N37: 当前连续活跃样本数
+        self._run_max = 0             # N37: 本句最长连续活跃样本数
         self._stream = None
         self._pre: list = []          # 预滚缓冲（说话前的少量音频，避免吃掉首字）
         self._speech: list = []       # 当前这句话
@@ -712,7 +733,15 @@ class MicListener:
         self._noise_samples = []
         self._last_emit = 0.0
         self._seg_rms_max = 0.0       # 本句说话期间的峰值 RMS（结句时用于日志，别取静音块）
-        self.stats = {"segments": 0, "dropped": 0, "last_rms": 0.0, "last_sec": 0.0}
+        self._seg_total = 0           # N37: 本句总样本数
+        self._seg_active = 0          # N37: 本句"超阈值"样本数
+        self._seg_rms_sum = 0.0       # N37: 本句块级 RMS 之和（算峰/均用）
+        self._seg_n = 0               # N37: 本句块数
+        self._last_thr = 0.0          # N37: 本次判定用的阈值（供 _emit 算裕度）
+        self.stats = {"segments": 0, "dropped": 0, "rejected_noise": 0,
+                      "last_rms": 0.0, "last_sec": 0.0,
+                      "rejected_ratio": 0.0, "rejected_rms": 0.0,
+                      "rejected_contrast": 0.0, "rejected_run_sec": 0.0}
 
     # ------------------------------------------------------------ 生命周期
     def start(self) -> None:
@@ -753,19 +782,23 @@ class MicListener:
         if self.threshold is None:
             if len(self._noise_samples) < 10:
                 self._noise_samples.append(rms)
-                floor = max(self._noise_samples)
-                # 噪声底 ×4，但夹在 [0.003, 0.03]：
-                #   下限——部分笔记本麦克风电平极低（实测环境 RMS≈0.0000/峰值 0.0015），
-                #          门槛设高了会"听不到人声"；
-                #   上限——嘈杂环境噪声底可能到 0.015+，×4 后（0.06+）会盖过人声（实测踩过）。
-                self._noise = min(max(floor * 4.0, 0.003), 0.03)
+                # N37 修正①：取 **30 分位**而不是最大值。
+                #   取 max 时，若"一开口就说话"（前 0.5s 已是人声），噪声底会被估成语音电平
+                #   → 阈值暴涨（实测 cmd_07 估到 0.0833、cmd_08 到 0.2327）→ 直接听不到人声。
+                floor = float(np.quantile(self._noise_samples, 0.3))
+                # N37 修正②：下限从 0.003 降到 floor_min（默认 0.0012）。
+                #   有了「活跃占比」这道门槛，就可以放心用更低的能量门槛去听**远场人声**
+                #   （实测 -20 dB 的远场指令峰值仅 ~0.003，旧的 0.003 下限根本听不到）。
+                #   上限仍保留 0.03：嘈杂环境噪声底 0.015+，×4 后会盖过人声（实测踩过）。
+                self._noise = min(max(floor * 4.0, self.floor_min), 0.03)
                 if len(self._noise_samples) == 10:
                     mc.log(f"[mic] 噪声底 RMS≈{floor:.4f} → 判定阈值 {self._noise:.4f}"
-                           f"（夹在 0.003~0.03；说话触发不了就 --mic-threshold 手调）")
+                           f"（夹在 {self.floor_min:g}~0.03；说话触发不了就 --mic-threshold 手调）")
                 return
             thr = self._noise
         else:
             thr = self.threshold
+        self._last_thr = float(thr)          # N37: 供 _emit 算能量裕度
 
         if not self._speaking:
             self._pre.append(block)
@@ -777,13 +810,30 @@ class MicListener:
                 self._pre = []
                 self._silence_frames = 0
                 self._seg_rms_max = rms
+                self._seg_rms_sum = rms             # N37: 对比度用的均值（峰/均）
+                self._seg_n = 1
+                self._seg_total = block.size        # N37: 从进入说话态起统计
+                self._seg_active = block.size
+                self._run_samples = block.size      # N37: 连续活跃计数
+                self._run_max = block.size
         else:
             self._speech.append(block)
             self._seg_rms_max = max(self._seg_rms_max, rms)
-            if rms < thr:
-                self._silence_frames += block.size
-            else:
+            self._seg_rms_sum += rms            # N37: 均值统计覆盖"整段"（含结句静音，
+            self._seg_n += 1                    #      实测这能让峰/均落在 4~8 的稳定区间）
+            if rms >= thr:
+                self._seg_active += block.size      # N37: 计入"活跃"时长
+                self._run_samples += block.size     # N37: 连续活跃累加
+                self._run_max = max(self._run_max, self._run_samples)
                 self._silence_frames = 0
+            else:
+                self._run_samples = 0               # N37: 连续发声被静音打断
+                self._silence_frames += block.size
+            # N37 修正③：分母只统计「句内」（含 ≤ intra_gap 的短暂停顿），
+            # **不把结句等待的那 0.8s 长静音算进去**，否则人话占比被稀释
+            # （实测 cmd_05 被误判成 23% < 25% 而拒掉）。
+            if self._silence_frames <= self.intra_gap_frames:
+                self._seg_total += block.size
             done = self._silence_frames >= self.silence_sec * self.samplerate
             too_long = sum(b.size for b in self._speech) >= self.max_speech_frames
             if done or too_long:
@@ -799,6 +849,31 @@ class MicListener:
         dur = len(audio) / self.samplerate
         if dur < self.min_speech_sec:
             return                                     # 太短，当噪声丢掉
+        # N37 第一/二道门槛：活跃占比 + 能量裕度
+        #   为什么需要：只看"有没有块超过阈值"的话，关门声/敲键盘/远处喧哗都能触发一次 A2；
+        #   真人说一句话的特点是「活跃时长占比高」且「峰值明显高于环境噪声」。
+        ratio = self._seg_active / max(1, self._seg_total)
+        seg_peak = max(self._seg_rms_max, rms)
+        need_rms = self._last_thr * self.margin
+        self._seg_total = 0
+        self._seg_active = 0
+        seg_mean = self._seg_rms_sum / max(1, self._seg_n)
+        contrast = seg_peak / max(seg_mean, 1e-9)
+        run_sec = self._run_max / self.samplerate
+        if ratio < self.min_active_ratio or seg_peak < need_rms \
+                or contrast < self.contrast_min or run_sec < self.min_active_sec:
+            self.stats["rejected_noise"] += 1
+            self.stats["rejected_ratio"] = round(ratio, 3)
+            self.stats["rejected_rms"] = round(seg_peak, 4)
+            self.stats["rejected_contrast"] = round(contrast, 2)
+            self.stats["rejected_run_sec"] = round(run_sec, 2)
+            self._seg_rms_max = 0.0
+            mc.log(f"[mic] 忽略环境噪声：{dur:.2f}s ｜ 活跃占比 {ratio:.0%}"
+                   f"（下限 {self.min_active_ratio:.0%}）｜ 峰值 RMS {seg_peak:.4f}"
+                   f"（需 ≥ {need_rms:.4f}）｜ 峰均比 {contrast:.1f}"
+                   f"（需 ≥ {self.contrast_min:g}）｜ 最长连续 {run_sec:.2f}s"
+                   f"（需 ≥ {self.min_active_sec:g}s）")
+            return
         now = time.monotonic()
         if now - self._last_emit < self.min_interval:
             self.stats["dropped"] += 1
@@ -929,6 +1004,7 @@ class Stats:
         self.set_target_target = ""  # A2 解析出的目标
         self.voice_count = 0         # 实时语音指令条数（麦克风）
         self.need_confirm_count = 0  # 需澄清次数（跨模态歧义，契约边界情况 2）
+        self.voice_rejected = 0      # N37: 识别不可靠（空文本/未解析出目标）被客户端拒识的语音条数
         self.dropped = 0         # 被新帧覆盖而丢弃
         self.overlay_nonempty = 0
         self.latencies: list[float] = []
@@ -1134,7 +1210,24 @@ class LiveRunner:
             self.args.url, self.session_id, wav,
             wav_path.name if wav_path else "voice.wav", self.args.timeout)
         label = f"实时语音 {dur:.2f}s" + (f"（{wav_path.name}）" if wav_path else "")
-        self._apply_a2_payload(payload, elapsed, label, err)
+        got_target = self._apply_a2_payload(payload, elapsed, label, err)
+        # N37 第三道门槛（业务层）：识别不可靠的语音**不当成有效指令**
+        #   注意边界：服务端在 A2 解析成功时**已经**改了会话 target，客户端无法回滚；
+        #   所以这里能做的只有「统计 + 明确提示」，让现场知道这句不作数（要重说）。
+        #   真正从根上解决要靠服务端加 confirm/dry-run 语义（走 v1.x）或唤醒词/PTT。
+        if err is None and isinstance(payload, dict) and not got_target:
+            text = str(payload.get("text") or "").strip()
+            need_confirm = bool(payload.get("need_confirm"))
+            if need_confirm:
+                pass                     # 歧义澄清是正常交互，不算拒识
+            elif len(text) < 2:
+                self.stats.voice_rejected += 1
+                mc.log(f"[mic] 拒识一条语音（识别文本过短 {text!r}）："
+                       f"离麦克风近些、把话说完再试")
+            elif not payload.get("target"):
+                self.stats.voice_rejected += 1
+                mc.log(f"[mic] 拒识一条语音（未解析出目标，text={text!r}）："
+                       f"换更明确的说法，如「分割心肌」")
 
     # ---------------------------------------------------------------- 渲染
     def _render(self, frame):
@@ -1192,7 +1285,11 @@ class LiveRunner:
             try:
                 self.mic = MicListener(
                     self._on_speech, threshold=args.mic_threshold,
-                    device=args.mic_device)
+                    device=args.mic_device,
+                    min_active_ratio=args.mic_min_active_ratio,
+                    margin=args.mic_margin,
+                    floor_min=args.mic_floor,
+                    contrast_min=args.mic_contrast)
                 self.mic.start()
             except Exception as exc:
                 mc.log(f"[mic] 启动失败（降级为无麦克风模式）：{exc}")
@@ -1565,7 +1662,23 @@ def parse_args(argv=None):
     p.add_argument("--mic", action="store_true",
                    help="开启实时麦克风监听：说话即切换分割目标（N4.6）")
     p.add_argument("--mic-threshold", type=float, default=None,
-                   help="语音检测 RMS 阈值（默认自适应，约噪声底 3 倍）；嘈杂环境可手调 0.02~0.05")
+                   help="语音检测 RMS 阈值（默认自适应 = 噪声底 ×4，夹在 0.003~0.03）；"
+                        "嘈杂环境可手调 0.02~0.05")
+    p.add_argument("--mic-min-active-ratio", type=float, default=0.25,
+                   help="N37 门槛①：一句话里「活跃（超阈值）时长」占比下限，"
+                        "低于此值判为环境噪声（默认 0.25）")
+    p.add_argument("--mic-margin", type=float, default=1.5,
+                   help="N37 门槛②：峰值能量需 ≥ 判定阈值 × 该倍数，"
+                        "否则判为贴边噪声（默认 1.5）")
+    p.add_argument("--mic-floor", type=float, default=0.0012,
+                   help="N37：自适应阈值下限（默认 0.0012）。远场人声电平很低，"
+                        "下限越低越能听到远处；若出现噪声误触发就调高")
+    p.add_argument("--mic-contrast", type=float, default=2.5,
+                   help="N37 门槛③：片段「峰值 / 均值」的比值下限（默认 2.5）。"
+                        "真人说话实测 4~8，持续噪声（空调）仅 1.4 → 用它把两者分开")
+    p.add_argument("--mic-min-active-sec", type=float, default=0.3,
+                   help="N37 门槛④：**连续**发声时长下限（默认 0.3s）。"
+                        "敲键盘/关门是孤立单块，不可能是连续说话")
     p.add_argument("--mic-device", type=int, default=None, help="麦克风设备序号（默认系统默认设备）")
     p.add_argument("--mic-selftest", type=float, default=0.0, metavar="SEC",
                    help="麦克风自测：录 SEC 秒只报电平统计（不落盘、不发请求）后退出")
