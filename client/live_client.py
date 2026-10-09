@@ -527,6 +527,158 @@ class Hud:
 # ===========================================================================
 # 二之二、麦克风监听（N4.6：真人说话 → A2 → 切换分割目标）
 # ===========================================================================
+# ===========================================================================
+# 三·五、回显层（N35）：窗口 / 落盘 / AR 镜片 —— **换渲染不改主循环**
+# ===========================================================================
+class GlassesDisplayAdapter:
+    """眼镜**显示**适配器基类（与采集侧 `GlassesAdapter` 对称）。
+
+    真机接入时只需实现 `display(img)`：把图像送到镜片 / 副屏。
+    约定：
+      · `img` 是 BGR 的 numpy.ndarray，**已经渲染好**（含掩膜与 HUD）
+      · 不要长时间阻塞（主循环会等它返回）；确有耗时请自行投递到内部队列
+    """
+
+    name = "base"
+
+    def open(self) -> None:
+        pass
+
+    def display(self, img) -> None:        # noqa: ANN001
+        raise NotImplementedError
+
+    def close(self) -> None:
+        pass
+
+
+class ReplayDisplayAdapter(GlassesDisplayAdapter):
+    """无硬件时的显示替代：按间隔把画面落盘（便于读图确认"镜片里会看到什么"）。"""
+
+    name = "replay"
+
+    def __init__(self, out_dir, interval: float = 2.0):
+        self.dir = Path(out_dir)
+        self.interval = max(0.1, float(interval))
+        self.n = 0
+        self._last = 0.0
+
+    def open(self) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def display(self, img) -> None:        # noqa: ANN001
+        now = time.perf_counter()
+        if now - self._last < self.interval:
+            return
+        self._last = now
+        self.n += 1
+        cv2.imwrite(str(self.dir / f"display_{self.n:04d}.jpg"), img)
+
+
+class Renderer:
+    """回显器基类：`present(img)` 返回 True 表示"用户要求退出"。"""
+
+    name = "base"
+
+    def open(self) -> None:
+        pass
+
+    def present(self, img) -> bool:        # noqa: ANN001
+        return False
+
+    def close(self) -> None:
+        pass
+
+
+class NullRenderer(Renderer):
+    """不回显（无头模式：自动化 / 后台 / 控制台自己渲染）。"""
+
+    name = "none"
+
+
+class WindowRenderer(Renderer):
+    """桌面窗口回显（OpenCV）：按 `q` 或 `ESC` 退出。"""
+
+    name = "window"
+
+    def __init__(self, title: str = "EgoMed-Agent Live"):
+        self.title = title
+
+    def present(self, img) -> bool:        # noqa: ANN001
+        cv2.imshow(self.title, img)
+        return (cv2.waitKey(1) & 0xFF) in (ord("q"), 27)
+
+    def close(self) -> None:
+        cv2.destroyAllWindows()
+
+
+class FileRenderer(Renderer):
+    """落盘回显：按间隔把**渲染后的画面**存到 `out_dir/display/`。
+
+    用途：无人值守跑长稳/现场时也能留下"当时看到什么"的证据；
+    与 `--save-frames`（原始帧+显示帧，按已发帧数抽）互补：这里按**时间**抽。
+    """
+
+    name = "file"
+
+    def __init__(self, out_dir, interval: float = 2.0):
+        self.dir = Path(out_dir)
+        self.interval = max(0.1, float(interval))
+        self.n = 0
+        self._last = 0.0
+
+    def present(self, img) -> bool:        # noqa: ANN001
+        now = time.perf_counter()
+        if now - self._last < self.interval:
+            return False
+        self._last = now
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self.n += 1
+            cv2.imwrite(str(self.dir / f"display_{self.n:04d}.jpg"), img)
+        except Exception:  # noqa: BLE001 落盘失败不影响主链路
+            pass
+        return False
+
+
+class ArGlassesRenderer(Renderer):
+    """AR 镜片回显：把画面交给**显示适配器**（真机到位只写一个 `display` 适配器）。"""
+
+    name = "glasses"
+
+    def __init__(self, adapter: GlassesDisplayAdapter):
+        self.adapter = adapter
+
+    def open(self) -> None:
+        self.adapter.open()
+
+    def present(self, img) -> bool:        # noqa: ANN001
+        self.adapter.display(img)
+        return False
+
+    def close(self) -> None:
+        self.adapter.close()
+
+
+def build_renderer(args, out_dir: Path) -> Renderer:
+    """按参数造回显器（N35）。
+
+    兼容旧参数：`--show`（默认 True）→ 窗口；`--no-show` → 不回显。
+    显式 `--renderer` 优先：window / file / none / glasses。
+    **真机 AR 接入点**：在这里把 `ReplayDisplayAdapter` 换成厂商显示适配器即可。
+    """
+    kind = getattr(args, "renderer", "auto")
+    if kind == "auto":
+        kind = "window" if getattr(args, "show", True) else "none"
+    interval = float(getattr(args, "render_interval", 2.0))
+    if kind == "window":
+        return WindowRenderer()
+    if kind == "file":
+        return FileRenderer(Path(out_dir) / "display", interval)
+    if kind == "glasses":
+        return ArGlassesRenderer(ReplayDisplayAdapter(Path(out_dir) / "display_ar", interval))
+    return NullRenderer()
+
+
 class MicListener:
     """实时麦克风监听：能量 VAD 自动切句，说完一句回调一次。
 
@@ -883,6 +1035,8 @@ class LiveRunner:
         self.session_id = args.session or mc.make_session_id(args.doctor)
         self.pump = FramePump(args.url, self.session_id, args.timeout, self.stats,
                               self._on_result)
+        # N35 回显层：窗口 / 落盘 / AR 镜片，主循环只调 present()
+        self.renderer = build_renderer(args, self.out_dir)
 
     # ---------------------------------------------------------------- 结果回调
     def _on_result(self, payload, elapsed, err, index, jpg) -> None:
@@ -1025,8 +1179,9 @@ class LiveRunner:
         if args.save_frames:
             self.samples_dir.mkdir(parents=True, exist_ok=True)
 
+        self.renderer.open()
         mc.log(f"[main] 会话 {self.session_id} → {args.url}"
-               f"（发帧 {args.fps:g} fps，显示={'开' if args.show else '关'}）")
+               f"（发帧 {args.fps:g} fps，回显={self.renderer.name}）")
 
         # 先设目标：契约语义是"先说话（A2）→ 再发帧（A1）"，否则 A1 会提示"请先告诉我要分割哪个器官"
         if args.audio:
@@ -1069,12 +1224,10 @@ class LiveRunner:
                     self.pump.submit(frame, self.frames_read)
                     next_send = now + send_interval
 
-                # 回显（每帧都刷新，显示刷新率 = 采集节奏）
-                if args.show:
-                    cv2.imshow("EgoMed-Agent Live", self._render(frame))
-                    if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
-                        exit_reason = "用户按键退出"
-                        break
+                # 回显（N35：交给 Renderer —— 换窗口/落盘/AR 都不动主循环）
+                if self.renderer.present(self._render(frame)):
+                    exit_reason = "用户按键退出"
+                    break
 
                 # 抽样落盘（供人工/自动化读图验收）
                 if args.save_frames and self.stats.sent > 0 \
@@ -1102,8 +1255,7 @@ class LiveRunner:
             source.release()
             if getattr(self, "mic", None) is not None:
                 self.mic.stop()
-            if args.show:
-                cv2.destroyAllWindows()
+            self.renderer.close()
             # 等发送线程收尾：被新帧覆盖丢弃的帧**永远不会发送**，所以结束条件是
             # "所有提交都有了归宿"（已发送 + 已丢弃 == 已提交），否则会白等到
             # timeout 上限（曾导致 elapsed 虚高 ~40%、发帧率指标被低估）。
@@ -1394,6 +1546,13 @@ def parse_args(argv=None):
     p.add_argument("--display", choices=["result", "blend"], default="result",
                    help="显示方式：result=显示服务器结果图；blend=与实时画面叠加")
     p.add_argument("--no-show", dest="show", action="store_false", help="无头模式（不弹窗）")
+    p.add_argument("--renderer", choices=["auto", "window", "file", "none", "glasses"],
+                   default="auto",
+                   help="回显方式（N35）：window=桌面窗口；file=按间隔把渲染画面落盘；"
+                        "none=不回显（自动化/控制台自渲染）；glasses=交给眼镜显示适配器；"
+                        "auto=跟随 --show（默认）")
+    p.add_argument("--render-interval", type=float, default=2.0,
+                   help="file/glasses 回显的落盘间隔秒（默认 2.0）")
     p.add_argument("--save-frames", action="store_true", help="落盘抽样帧（每 10 个已发帧一组）")
     p.add_argument("--max-frames", type=int, default=0, help="发送多少帧后停止（0=不限）")
     p.add_argument("--duration", type=float, default=0.0, help="运行多少秒后停止（0=不限）")
