@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import queue
 import statistics
 import sys
 import threading
@@ -284,18 +285,158 @@ class NetworkStreamSource(FrameSource):
             self._cap.release()
 
 
-class GlassesSource(FrameSource):
-    """眼镜源占位：真机 SDK 到位后实现（回调 → 内部队列 → read()）。
+# ---------------------------------------------------------------------------
+# 眼镜接入层（N34）：SDK 适配器 + 有界队列，真机到位只写一个 Adapter
+# ---------------------------------------------------------------------------
+DEFAULT_GLASSES_REPLAY = PROJECT_ROOT / "data" / "samples" / "acdc"
+GLASSES_QUEUE_SIZE = 2          # 队列满则丢最旧（latest-wins，避免延迟累积）
 
-    迁移只需实现本类，主循环、发帧、回显逻辑一行不改（决策记录 D2/D7）。
+
+class GlassesAdapter:
+    """眼镜 SDK 适配器基类 —— **真机接入时只写这一个子类**。
+
+    约定（对齐决策记录 D2/D7：眼镜端零智能）：
+      · 只负责"把 SDK 推来的帧交给回调"，不做推理、不改分辨率
+      · 帧格式：BGR 的 numpy.ndarray（与 OpenCV 一致）
+      · 回调可能在 SDK 自己的线程里触发 → 本层用队列与主循环解耦
+
+    真机接入示例：
+        class MyGlassesAdapter(GlassesAdapter):
+            def open(self, on_frame):
+                self._sdk = MyVendorSDK()
+                self._sdk.set_frame_callback(on_frame)   # 回调式推流
+                self._sdk.start_preview()
+            def close(self):
+                self._sdk.stop_preview()
+    """
+
+    name = "base"
+
+    def open(self, on_frame) -> None:      # noqa: ANN001
+        raise NotImplementedError
+
+    def close(self) -> None:
+        pass
+
+
+class ReplayAdapter(GlassesAdapter):
+    """无硬件时的替代适配器：按 fps 把样例帧目录"推"进回调。
+
+    用途：在**没有眼镜**的情况下把整条链路（队列 → 丢帧 → 发帧 → 回显）跑通，
+    与真机共享同一套主循环代码；也让 `--source glasses` 今天就能自测。
+    """
+
+    name = "replay"
+
+    def __init__(self, root, fps: float = DEFAULT_SOURCE_FPS, loop: bool = True):
+        self.root = Path(root)
+        self.fps = max(1.0, float(fps))
+        self.loop = loop
+        self._stop = threading.Event()
+
+    def open(self, on_frame) -> None:      # noqa: ANN001
+        threading.Thread(target=self._run, args=(on_frame,), daemon=True).start()
+
+    def _run(self, on_frame) -> None:      # noqa: ANN001
+        files = ([p for p in sorted(self.root.iterdir(), key=mc.natural_key)
+                  if p.suffix.lower() in mc.IMG_EXTS] if self.root.is_dir() else [])
+        if not files:
+            mc.log(f"[glasses/replay] 目录里没有图片：{self.root}")
+            return
+        mc.log(f"[glasses/replay] 模拟眼镜推流：{len(files)} 帧 @ {self.fps:g} fps"
+               f"（循环={self.loop}）")
+        interval = 1.0 / self.fps
+        i, nxt = 0, time.perf_counter()
+        while not self._stop.is_set():
+            img = cv2.imread(str(files[i]))
+            if img is not None:
+                on_frame(img)
+            i += 1
+            if i >= len(files):
+                if not self.loop:
+                    break
+                i = 0
+            nxt += interval
+            sleep = nxt - time.perf_counter()
+            if sleep > 0:
+                time.sleep(sleep)
+            else:
+                nxt = time.perf_counter()
+
+    def close(self) -> None:
+        self._stop.set()
+
+
+class GlassesSource(FrameSource):
+    """眼镜源：SDK 回调 → 有界队列 → 主循环 `read()`。
+
+    · 队列长度固定（默认 2）：**满了丢最旧** —— 与契约"最新帧优先"一致，
+      也能吸收"SDK 帧率 > 服务端处理能力"时的积压（否则端到端延迟会一直涨）
+    · `received` / `dropped` 会写进运行报告，便于判断是"眼镜推太快"还是"服务端慢"
+    · 真机接入 = 写一个 `GlassesAdapter` 子类并在这里传进来，**主循环一行不改**
     """
 
     name = "glasses"
 
+    def __init__(self, adapter: GlassesAdapter | None = None,
+                 queue_size: int = GLASSES_QUEUE_SIZE):
+        self.adapter = adapter or ReplayAdapter(DEFAULT_GLASSES_REPLAY)
+        self.queue_size = max(1, int(queue_size))
+        self.received = 0
+        self.dropped = 0
+        self._q: queue.Queue = queue.Queue(maxsize=self.queue_size)
+        self._fps = 30.0          # 主循环节奏用；真机可从 SDK 读实际帧率
+
     def open(self) -> None:
-        raise NotImplementedError(
-            "眼镜 SDK 未接入。真机到位后在此实现：SDK 帧回调 → queue.Queue → read() 弹出"
-        )
+        self.adapter.open(self._on_frame)
+
+    def _on_frame(self, frame) -> None:    # noqa: ANN001
+        """SDK 回调（可能在别的线程）：入队；满则丢最旧。"""
+        self.received += 1
+        try:
+            self._q.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._q.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                pass
+            try:
+                self._q.put_nowait(frame)
+            except queue.Full:
+                self.dropped += 1
+
+    def read(self):
+        try:
+            return True, self._q.get(timeout=2.0)
+        except queue.Empty:
+            return True, None              # 暂无新帧：不结束，主循环 continue
+
+    # 注意：fps 是 FrameSource 上的 @property（读 self._fps），这里**不要**再定义同名方法，
+    # 否则会把属性覆盖成 bound method，主循环 `min(source.fps, 60)` 直接 TypeError（已踩过一次）。
+
+    def release(self) -> None:
+        self.adapter.close()
+
+
+def build_glasses_source(args) -> GlassesSource:
+    """按 `--glasses-adapter` 造眼镜源。
+
+    **真机 SDK 到位后只改这里**：加一个分支 new MyGlassesAdapter(...) 即可，
+    主循环 / 发帧 / 回显 / 服务端一行都不用动（决策记录 D2/D7）。
+    """
+    kind = getattr(args, "glasses_adapter", "replay")
+    if kind == "replay":
+        d = Path(args.input)
+        if not d.is_absolute():
+            d = PROJECT_ROOT / d
+        if not d.exists():
+            d = DEFAULT_GLASSES_REPLAY
+            mc.log(f"[glasses] --input 不是有效目录，回退到 {d.relative_to(PROJECT_ROOT)}")
+        adapter = ReplayAdapter(d, fps=args.source_fps, loop=not args.no_loop)
+    else:
+        raise SystemExit(f"[glasses] 未知适配器：{kind}（当前仅支持 replay）")
+    return GlassesSource(adapter, queue_size=getattr(args, "glasses_queue", GLASSES_QUEUE_SIZE))
 
 
 def build_source(args) -> FrameSource:
@@ -303,6 +444,8 @@ def build_source(args) -> FrameSource:
         return WebcamSource(args.index, args.width, args.height)
     if args.source == "url":
         return NetworkStreamSource(args.input, fps=args.source_fps)
+    if args.source == "glasses":
+        return build_glasses_source(args)
     return VideoFileSource(args.input, loop=not args.no_loop, fps=args.source_fps)
 
 
@@ -1227,7 +1370,14 @@ def parse_args(argv=None):
     p.add_argument("--source", choices=["video", "cam", "url", "glasses"], default="video",
                    help="采集源：video=视频/帧目录（自动化），cam=本机摄像头，"
                         "url=网络视频流（手机 IP Webcam 当模拟眼镜）；默认 video")
-    p.add_argument("--input", default="data/samples/acdc", help="video 源的输入路径（mp4 或帧目录）")
+    p.add_argument("--input", default="data/samples/acdc",
+                   help="video 源的输入路径（mp4 或帧目录）；glasses 源的 replay 适配器也用它")
+    p.add_argument("--glasses-adapter", default="replay", choices=["replay"],
+                   help="眼镜适配器（N34）：replay=用样例帧目录模拟眼镜推流；"
+                        "真机 SDK 到位后在 build_glasses_source() 里注册新适配器")
+    p.add_argument("--glasses-queue", type=int, default=GLASSES_QUEUE_SIZE,
+                   help=f"眼镜帧队列长度（满则丢最旧，默认 {GLASSES_QUEUE_SIZE}）："
+                        "吸收 SDK 帧率高于服务端处理能力时的积压")
     p.add_argument("--audio", default="", help="启动时先发这段 wav 设置分割目标（A2，契约语义：先说后看）")
     p.add_argument("--expect-overlay", action="store_true",
                    help="要求必须出现有效 overlay（否则 FAIL）——用于验证'说完话能出分割结果'")
@@ -1296,9 +1446,6 @@ def main(argv=None) -> int:
     if args.vad_selftest:
         return vad_selftest(args.vad_selftest, args.vad_threshold,
                             url=args.url, send=args.vad_send)
-    if args.source == "glasses":
-        mc.log("[main] glasses 源未实现（眼镜 SDK 到位后补 GlassesSource）")
-        return 2
     runner = LiveRunner(args)
     try:
         return runner.run()
