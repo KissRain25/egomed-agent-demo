@@ -186,7 +186,7 @@ class Console:
         self.var_mic = tk.BooleanVar(value=False)
         ttk.Checkbutton(left, text="开启麦克风（说话切换目标）", variable=self.var_mic).pack(
             anchor="w", pady=(4, 0))
-        ttk.Button(left, text="机位预检（发 6 帧看有没有目标）",
+        ttk.Button(left, text="机位校准（引导式，8 帧）",
                    command=self.on_preflight).pack(anchor="w", pady=(6, 0))
 
         # ② 分割目标
@@ -320,24 +320,29 @@ class Console:
         threading.Thread(target=_work, daemon=True).start()
 
     def on_preflight(self) -> None:
+        """N36：调用「引导式机位校准」工具，把结论显示在状态栏。
+
+        复用同一个 `client/calibrate.py`（命令行也能单独跑），保证两条入口结论一致。
+        """
         if self.preflight_thread is not None:
             return
-        try:
-            args = self._build_args({"out": str(self.out_root / "preflight"), "max_frames": 6})
-        except SystemExit:
-            return
-        self.var_msg.set("机位预检：连发 6 帧，看是否出现有效 overlay …")
+        self.var_msg.set("机位校准中（抽 8 帧，约 5~10 秒）…")
 
         def _work():
-            r = lc.LiveRunner(args)
-            try:
-                r.run()
-            except Exception as exc:  # noqa: BLE001
-                self.var_msg.set(f"预检异常：{exc}")
-                return
-            ok = r.stats.overlay_nonempty
-            verdict = "通过 ✓" if ok > 0 else "未检测到目标 ✗（对准影像 / 调机位）"
-            self.var_msg.set(f"机位预检：overlay 非空 {ok}/6 → {verdict}")
+            script = Path(__file__).resolve().parent / "calibrate.py"
+            cmd = [sys.executable, str(script),
+                   "--source", self.var_source.get(),
+                   "--input", self.var_input.get().strip() or "data/samples/acdc",
+                   "--frames", "8"]
+            if self.runner is not None:
+                cmd += ["--url", self.runner.args.url]
+            r = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True,
+                               encoding="utf-8", errors="ignore")
+            tail = [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
+            verdict = next((l for l in reversed(tail) if l.startswith("结论")), "")
+            advice = [l for l in tail if l.startswith("→")]
+            msg = verdict + (f"；{advice[0]}" if advice else "")
+            self.var_msg.set(msg[:170] or f"校准失败（退出码 {r.returncode}）")
             self.preflight_thread = None
 
         self.preflight_thread = threading.Thread(target=_work, daemon=True)
