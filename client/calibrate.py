@@ -134,6 +134,12 @@ def main(argv=None) -> int:
         print("      → 先起服务端：python server/api.py --real（或双击「启动模拟眼镜.bat」）")
         return 2
 
+    if h.get("state") == "warming":
+        # T2 配套：预热期服务端在，但 /healthz 是 503 + state=warming；
+        # 若不拦，8 帧会全失败 → 误报"机位需调整"，把用户带偏。
+        print("      [错误] 服务端正在预热（state=warming）：请等就绪后再校准")
+        return 2
+
     target = ""
     if args.no_set_target:
         print("[2/4] 跳过设目标（--no-set-target）")

@@ -104,6 +104,10 @@ def main() -> int:
     except Exception as exc:
         log(f"[!!] 服务端不可用（{exc}）")
         return 2
+    if hz.get("state") == "warming":
+        # T2 配套：预热期 /healthz 是 503 + state=warming；此时量延迟会得到失真数字。
+        log("[!!] 服务端正在预热（state=warming）：请等就绪后再跑（否则延迟数字失真）")
+        return 2
     if not hz.get("real_engine"):
         log("[!!] 服务端当前是假实现，请用 --real 启动")
         return 2

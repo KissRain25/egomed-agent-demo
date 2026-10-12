@@ -91,6 +91,10 @@ E_INTERNAL = 5000     # 服务器内部错误
 # 真引擎开关：默认假实现；--real 或 EGOMED_REAL_ENGINE=1 启用
 REAL_ENGINE = os.environ.get("EGOMED_REAL_ENGINE", "0") == "1"
 
+# T2：--real 预热期间 state=warming（提前监听，/healthz 返回 503 + state，客户端据此显示"预热中"）。
+# 假实现无预热，直接就绪。预热结束（无论成败）都会置回 ready。
+_SERVER_STATE = "ready"
+
 
 # ---------------------------------------------------------------------------
 # 会话状态（契约 5.1：当前模态 / 目标 / 帧计数 / 最近处理时间）
@@ -125,6 +129,7 @@ class Session:
         完成帧，直接返回缓存结果。
         """
         cv = self._frame_cv
+        wait_t0 = time.perf_counter()      # T9：本请求"进会话→出结果"的总计时起点
         with cv:
             self._latest_seq += 1
             self._latest_frame = frame
@@ -134,13 +139,18 @@ class Session:
                     cv.wait()
                     continue
                 if self._latest_seq <= self._done_seq:
-                    # 已有更新帧被处理完，直接返回最新结果（本帧被覆盖丢弃）
-                    return dict(self._last_result)
+                    # 已有更新帧被处理完，本帧被覆盖丢弃：返回最新结果并标记 dropped（T9）
+                    out = dict(self._last_result or {})
+                    out["_wait_ms"] = _ms(wait_t0)
+                    out["_encode_ms"] = 0
+                    out["_dropped"] = True
+                    return out
                 # 本线程成为 worker，取当前最新帧处理（更早的旧帧随之丢弃）
                 self._working = True
                 seq = self._latest_seq
                 data = self._latest_frame
                 break
+        wait_ms = _ms(wait_t0)             # T9：排队等待耗时（被覆盖的帧这里会很小）
         # 锁外执行耗时处理，不阻塞本会话其它等待线程、也不阻塞其它会话
         try:
             result = processor(data)
@@ -152,9 +162,13 @@ class Session:
         with cv:
             self._working = False
             self._done_seq = seq
-            self._last_result = result
+            # 缓存不含 _encode_ms（该值只对本请求有效，避免污染后续 dropped 帧的日志）
+            self._last_result = {k: v for k, v in result.items() if k != "_encode_ms"}
             cv.notify_all()
-        return dict(result)
+        out = dict(result)
+        out["_wait_ms"] = wait_ms
+        out["_dropped"] = False
+        return out
 
 
 _SESSIONS: dict[str, Session] = {}
@@ -193,11 +207,20 @@ def _setup_logger() -> logging.Logger:
 _log = _setup_logger()
 
 
+def _ms(t0: float) -> int:
+    """从 perf_counter 起点到现在的毫秒数（取整）—— T9 分段计时用。"""
+    return round((time.perf_counter() - t0) * 1000)
+
+
 def _log_frame(session_id: str, frame_no: int, modality: str, target: str,
-               elapsed_ms: int, status: str) -> None:
+               elapsed_ms: int, status: str,
+               wait_ms: int = 0, infer_ms: int = 0, encode_ms: int = 0) -> None:
+    # T9：拆出分段耗时（排队 wait / 推理 infer / 编码 encode / 合计 total），
+    # 用于定位 A2/A1 并发超时卡在哪一段。
     _log.info(
         f"session={session_id} | frame={frame_no} | modality={modality or '-'} | "
-        f"target={target or '-'} | elapsed={elapsed_ms}ms | status={status}"
+        f"target={target or '-'} | wait={wait_ms}ms infer={infer_ms}ms "
+        f"encode={encode_ms}ms total={elapsed_ms}ms | status={status}"
     )
 
 
@@ -250,27 +273,40 @@ def _get_engine():
 
 
 def _warmup_real_engine() -> None:
-    """--real 启动时同步预热（P0.2 + A.11）：
+    """--real 启动时后台预热（P0.2 + A.11 + T2）：
 
-    - 加载真引擎模块，并把 ≥1 个常用模态（WARMUP_MODALITIES）的 SAM2/YOLO
-      提前到进程启动时加载，避免首个 frame 请求触发约 66s 的冷启动；
-    - 预热 ASR（asr_medical.warmup，medium 首次加载约 30s）。
+    - 分阶段打印进度与每阶段耗时（[1/3] 引擎模块 → [2/3] 常用模态 SAM2/YOLO → [3/3] ASR）；
+    - 预热结束（无论成败）都会把 _SERVER_STATE 置为 ready。服务**提前监听**，
+      预热期间 /healthz 返回 503 + state=warming，客户端据此显示"预热中"，
+      不必再盲等 60~90 秒（T2）。
 
     ASR 预热失败不阻塞启动：A2 已有优雅降级，仅首个 A2 请求会变慢。
     """
-    print("[server] 预热真引擎（首次较慢，请稍候）...", flush=True)
-    demo, _parse_target, _transcribe = _get_engine()
-    for modality in WARMUP_MODALITIES:
-        print(f"[server]   预热模态模型：{modality} ...", flush=True)
-        demo._get_models(modality)
-    if _ASR_WARMUP is not None:
-        try:
-            print("[server]   预热 ASR（medium whisper，约 30s）...", flush=True)
-            _ASR_WARMUP()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[server]   ASR 预热失败（不影响启动，A2 首个请求会较慢）：{exc}",
-                  flush=True)
-    print("[server] 预热完成。", flush=True)
+    global _SERVER_STATE
+    t_start = time.perf_counter()
+    try:
+        t0 = time.perf_counter()
+        demo, _parse_target, _transcribe = _get_engine()
+        print(f"[server]   [1/3] 引擎模块加载完成（{_ms(t0)}ms）", flush=True)
+        for modality in WARMUP_MODALITIES:
+            print(f"[server]   [2/3] 加载模态模型（SAM2 + YOLO）：{modality} ...", flush=True)
+            t1 = time.perf_counter()
+            demo._get_models(modality)
+            print(f"[server]         {modality} 完成（{_ms(t1)}ms）", flush=True)
+        if _ASR_WARMUP is not None:
+            print("[server]   [3/3] 预热 ASR（medium whisper，约 30s）...", flush=True)
+            t2 = time.perf_counter()
+            try:
+                _ASR_WARMUP()
+                print(f"[server]         ASR 完成（{_ms(t2)}ms）", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[server]         ASR 预热失败（不影响启动，A2 首个请求会较慢）："
+                      f"{exc}（{_ms(t2)}ms）", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[server] 预热失败（服务仍监听，后续请求可能报错）：{exc}", flush=True)
+    finally:
+        _SERVER_STATE = "ready"
+        print(f"[server] 预热结束，总耗时 {_ms(t_start)}ms。", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -544,72 +580,77 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
             "need_confirm": False, "candidates": [],
         }
 
+    t_enc = time.perf_counter()                       # T9：编码分段计时
     overlay_path = Path(result["overlay_files"][-1])
     overlay_b64 = _overlay_b64(overlay_path.read_bytes())
+    encode_ms = _ms(t_enc)
     return {
         **_mk_base(session_id),
         "modality": modality, "target": target,
         "overlay": overlay_b64,
         "message": f"已分割 {target}",
         "need_confirm": False, "candidates": [],
+        "_encode_ms": encode_ms,   # T9：仅供 post_frame 记分段日志，响应前会被弹出
+    }
+
+
+def _audio_payload(session_id: str, text: str, target: str, modality_hint: str,
+                   need_confirm: bool, candidates: list, message: str,
+                   timing: dict) -> dict:
+    """A2 响应体（字段与契约 A2 完全一致），另附 _timing 供 post_audio 记日志（会被弹出）。"""
+    return {
+        "status": "ok", "session_id": session_id,
+        "text": text, "target": target, "modality_hint": modality_hint,
+        "need_confirm": need_confirm, "candidates": candidates,
+        "message": message,
+        "_timing": timing,
     }
 
 
 def _handle_audio_real(session_id: str, audio_bytes: bytes, session: Session) -> dict:
     demo, parse_target, transcribe = _get_engine()
 
+    # T9：分段计时（读入/落盘 read、转写 asr、解析 nlu），供 post_audio 定位慢在哪一段
+    t_read = time.perf_counter()
     adir = STREAM_DIR / session_id / "audio"
     adir.mkdir(parents=True, exist_ok=True)
     wav_path = adir / f"audio_{int(time.time() * 1000)}.wav"
     wav_path.write_bytes(audio_bytes)
+    timing = {"audio": wav_path.name, "read_ms": _ms(t_read), "asr_ms": 0, "nlu_ms": 0}
 
+    t_asr = time.perf_counter()
     try:
         text = transcribe(str(wav_path))
     except Exception as exc:
-        return {
-            "status": "ok", "session_id": session_id,
-            "text": "", "target": "", "modality_hint": "",
-            "need_confirm": False, "candidates": [],
-            "message": f"语音识别不可用（缺少 faster-whisper？）：{exc}",
-        }
+        timing["asr_ms"] = _ms(t_asr)
+        return _audio_payload(
+            session_id, "", "", "", False, [],
+            f"语音识别不可用（缺少 faster-whisper？）：{exc}", timing)
+    timing["asr_ms"] = _ms(t_asr)
 
     if not text:
-        return {
-            "status": "ok", "session_id": session_id,
-            "text": "", "target": "", "modality_hint": "",
-            "need_confirm": False, "candidates": [],
-            "message": "没听清，请再说一次",
-        }
+        return _audio_payload(session_id, "", "", "", False, [],
+                              "没听清，请再说一次", timing)
 
+    t_nlu = time.perf_counter()
     r = parse_target(text)
+    timing["nlu_ms"] = _ms(t_nlu)
     if not r.ok:
-        return {
-            "status": "ok", "session_id": session_id,
-            "text": text, "target": "", "modality_hint": "",
-            "need_confirm": False, "candidates": [],
-            "message": r.message,
-        }
+        return _audio_payload(session_id, text, "", "", False, [], r.message, timing)
 
     if len(r.targets) > 1:
         # 跨模态歧义：如"左心室"在 MRI 和超声里都存在（契约 A1 边界情况 2）
-        return {
-            "status": "ok", "session_id": session_id,
-            "text": text, "target": "", "modality_hint": "",
-            "need_confirm": True, "candidates": r.targets,
-            "message": f"「{text}」在多个模态里都存在，请明确是哪一个：{'、'.join(r.targets)}",
-        }
+        return _audio_payload(
+            session_id, text, "", "", True, r.targets,
+            f"「{text}」在多个模态里都存在，请明确是哪一个：{'、'.join(r.targets)}",
+            timing)
 
     target = r.targets[0]
     modality, _ = demo.resolve_modality(target)
     session.target = target
     session.modality = modality or ""
-    return {
-        "status": "ok", "session_id": session_id,
-        "text": text, "target": target,
-        "modality_hint": modality or "",
-        "need_confirm": False, "candidates": [],
-        "message": f"已切换到 {target}",
-    }
+    return _audio_payload(session_id, text, target, modality or "", False, [],
+                          f"已切换到 {target}", timing)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +713,11 @@ async def post_frame(
         _log_frame(session_id, s.frames_processed, "", "", 0, f"error:{exc}")
         return _error(E_INTERNAL, f"服务器内部错误：{exc}", 500)
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    # T9：拆出分段耗时（wait/infer/encode），私有字段弹掉、不进响应
+    wait_ms = payload.pop("_wait_ms", 0)
+    encode_ms = payload.pop("_encode_ms", 0)
+    dropped = payload.pop("_dropped", False)
+    infer_ms = 0 if dropped else max(0, elapsed_ms - wait_ms - encode_ms)
     payload["elapsed_ms"] = elapsed_ms
     payload["frames_processed"] = s.frames_processed
     if payload.get("modality"):
@@ -680,7 +726,9 @@ async def post_frame(
         s.target = payload["target"]
 
     _log_frame(session_id, s.frames_processed, payload.get("modality", ""),
-               payload.get("target", ""), elapsed_ms, "ok")
+               payload.get("target", ""), elapsed_ms,
+               "dropped" if dropped else "ok",
+               wait_ms=wait_ms, infer_ms=infer_ms, encode_ms=encode_ms)
     return JSONResponse(payload)
 
 
@@ -709,23 +757,67 @@ async def post_audio(
         payload = await run_in_threadpool(handle_audio, session_id, audio_bytes, s)
     except Exception as exc:
         return _error(E_INTERNAL, f"服务器内部错误：{exc}", 500)
-    elapsed_ms = round((time.perf_counter() - t0) * 1000)
-    _log.info(f"session={session_id} | audio | target={payload.get('target') or '-'} | "
-              f"elapsed={elapsed_ms}ms | status=ok")
+    total_ms = _ms(t0)
+    # T9：A2 分段耗时（read/asr/nlu），私有 _timing 弹掉、不进响应；
+    # 假实现没有 asr/nlu 阶段，audio 名回退到客户端上传文件名。
+    timing = payload.pop("_timing", None) or {}
+    audio_name = timing.get("audio") or (audio.filename if audio else None) or "-"
+    _log.info(
+        f"session={session_id} | audio={audio_name} | "
+        f"text={payload.get('text') or '-'} | target={payload.get('target') or '-'} | "
+        f"need_confirm={payload.get('need_confirm', False)} | "
+        f"read={timing.get('read_ms', 0)}ms asr={timing.get('asr_ms', 0)}ms "
+        f"nlu={timing.get('nlu_ms', 0)}ms total={total_ms}ms | ok"
+    )
     return JSONResponse(payload)
+
+
+def _rss_mb():
+    """进程常驻内存（MB），供 N24 长稳监控用；拿不到时返回 None（T10）。"""
+    try:
+        import psutil
+        return round(psutil.Process().memory_info().rss / 1024 / 1024)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _gpu_mem_mb():
+    """torch 已分配的显存（MB）；仅真引擎下有意义，拿不到返回 None（T10）。"""
+    if not REAL_ENGINE:
+        return None
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return round(torch.cuda.memory_allocated() / 1024 / 1024)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 @app.get("/healthz")
 async def healthz():
-    """健康检查（联调排障用，非契约接口）。"""
-    return {"status": "ok", "sessions": len(_SESSIONS), "real_engine": REAL_ENGINE}
+    """健康检查（联调排障用，非契约接口）。
+
+    T2：增加 state（warming/ready），预热期返回 **503** 供客户端显示"预热中"；
+    T10：增加 rss_mb（进程内存）与 gpu_mem_mb（显存），供 N24 长稳直接轮询。
+    """
+    state = _SERVER_STATE
+    body = {
+        "status": "ok",
+        "sessions": len(_SESSIONS),
+        "real_engine": REAL_ENGINE,
+        "state": state,
+        "rss_mb": _rss_mb(),
+        "gpu_mem_mb": _gpu_mem_mb(),
+    }
+    return JSONResponse(status_code=503 if state == "warming" else 200, content=body)
 
 
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 def main() -> None:
-    global REAL_ENGINE
+    global REAL_ENGINE, _SERVER_STATE
     import uvicorn
 
     parser = argparse.ArgumentParser(description="EgoMed-Agent 服务端")
@@ -738,7 +830,11 @@ def main() -> None:
 
     if args.real:
         REAL_ENGINE = True
-        _warmup_real_engine()   # P0.2 / A.11：同步预热引擎 + 常用模态 + ASR
+        # T2：提前监听 + 后台预热。预热期 /healthz 返回 503 + state=warming，
+        # 客户端据此显示"预热中"，不再盲等 60~90 秒（方案 b）。
+        _SERVER_STATE = "warming"
+        threading.Thread(target=_warmup_real_engine, daemon=True).start()
+        print("[server] 预热已在后台开始（/healthz 先返回 503 + state=warming）", flush=True)
     mode = "真引擎" if REAL_ENGINE else "假实现"
     print(f"[server] {mode}启动：http://{args.host}:{args.port}  （Ctrl+C 停止）")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

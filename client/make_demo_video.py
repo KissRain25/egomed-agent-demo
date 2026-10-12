@@ -76,6 +76,11 @@ def main() -> int:
     except Exception as exc:
         log(f"[!!] 服务端不可用（{exc}）：请先 `python server/api.py --real` 并等预热")
         return 2
+    if hz.get("state") == "warming":
+        # T2 配套：服务端 --real 现在提前监听，预热期 /healthz 返回 503 + state=warming；
+        # 此时 real_engine 已是 true，若不看 state 就会误判"已就绪"而录出坏素材。
+        log("[!!] 服务端正在预热（state=warming）：请等就绪后再跑")
+        return 2
     if not hz.get("real_engine"):
         log("[!!] 服务端是假实现，请用 --real 启动")
         return 2
