@@ -1,0 +1,16 @@
+# CI 精简依赖 —— 只够跑「mock 套件」用，不含 torch / 模型 / 音频设备
+#
+# 用途：.github/workflows/regress-mock.yml
+# 原则：CI 里**不装 GPU 相关大依赖**（torch / faster-whisper / sounddevice），
+#       因为它只验「协议与边界」——这正是 mock 套件存在的意义（不用 GPU、秒级起）。
+#
+# 注意：opencv-python-headless + numpy 必须有 —— 服务端 `_is_bad_frame()` 缺 cv2 时会
+#       "按可用帧处理"（返回 False），C2 坏帧用例就会假失败。CI 里必须装。
+fastapi
+uvicorn
+python-multipart
+Pillow
+requests
+numpy
+opencv-python-headless
+psutil

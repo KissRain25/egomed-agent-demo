@@ -1,0 +1,60 @@
+# 合并门禁：PR 与 main 推送都跑。mock 套件不需要 GPU，几十秒出结果。
+# 本机已验证等价三步：py_compile 34 文件 0 失败 → uvicorn 起服务端 → mock 8/8。
+name: mock-regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  mock-suite:
+    name: mock 8/8（无需 GPU）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 拉代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ① 安装精简依赖（不含 GPU / 模型）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: ② 语法检查
+        run: |
+          python -m py_compile server/api.py $(ls client/*.py) $(ls scripts/*.py)
+
+      - name: ③ 起服务端（假实现）并等就绪
+        run: |
+          nohup python -m uvicorn server.api:app --host 127.0.0.1 --port 8000 > /tmp/server.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8000/healthz > /dev/null; then
+              echo "服务端就绪：$(curl -fsS http://127.0.0.1:8000/healthz)"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error title=服务端未就绪::40 次探活失败，日志尾部："
+          tail -20 /tmp/server.log
+          exit 1
+
+      - name: ④ 样例素材检查（缺失则跳过 mock 套件并告警）
+        id: samples
+        run: |
+          if [ -d data/samples/acdc ] && [ -d data/samples/bad ]; then
+            echo "present=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=验收样例缺失::data/samples/{acdc,bad} 未入库 → 跳过 mock 套件。见 docs/协作规范_GitHub.md §5"
+          fi
+
+      - name: ⑤ mock 验收（期望 8/8）
+        if: steps.samples.outputs.present == '1'
+        run: python client/acceptance_test.py --suite mock

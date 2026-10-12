@@ -43,3 +43,19 @@ run_test.py
 
 # 调试残留归档目录（含缩略图缓存，不提交）
 _archive/
+
+# ---------------------------------------------------------------------------
+# CI 最小验收样例（D15：让 GitHub Actions 的「mock 8/8」门禁真正生效）
+#   背景：`acceptance_test --suite mock` 需要 data/samples/{acdc,bad}，但 /data/* 被忽略
+#         → 云端缺素材 → 门禁只能"告警并跳过"（等于没门禁）。
+#   策略：只入库**极少量、可复现**的样例；其余 data/** 仍全部忽略（本机 72.5 GB）。
+#   注意：git 不允许"父目录被忽略、却 re-include 其子文件"，所以必须
+#         先 `/*` 忽略目录内容 → 再 `!/目录/` → 再放行具体文件（与 text_prompt_eval 同法）。
+# ---------------------------------------------------------------------------
+!/data/samples/
+/data/samples/*
+!/data/samples/bad/
+!/data/samples/bad/*
+!/data/samples/acdc/
+/data/samples/acdc/*
+!/data/samples/acdc/ci_*.jpg
