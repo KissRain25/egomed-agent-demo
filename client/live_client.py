@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
 import queue
 import statistics
 import sys
@@ -292,6 +293,73 @@ DEFAULT_GLASSES_REPLAY = PROJECT_ROOT / "data" / "samples" / "acdc"
 GLASSES_QUEUE_SIZE = 2          # 队列满则丢最旧（latest-wins，避免延迟累积）
 
 
+# ---------------------------------------------------------------- Rokid 通道辅助
+A2_SAMPLERATE = 16000            # A2 契约：wav 16 kHz 单声道
+A2_CHANNELS = 1
+
+
+def nv21_to_bgr(data, width: int, height: int):
+    """NV21（YUV420SP：Y 平面 + 交错 VU）→ BGR ndarray；无法解码时返回 None。
+
+    **为什么需要这一层**：Rokid 眼镜 SDK 的画面回调给的是 **NV21 原始 YUV**
+    （官方示例即 `IMessageListener.onNv21Data()`），不是 RGB/JPG。
+    我们内部（FrameSource / 压缩 / Renderer）统一约定 BGR —— 所以在这里一次转干净，
+    **SDK 的像素格式不外泄到主循环**（换厂商时只改适配层）。
+    """
+    if data is None or width is None or height is None:
+        return None
+    if width < 2 or height < 2 or width % 2 or height % 2:
+        return None                      # YUV420 按 2×2 采样：奇数宽高必然错位
+    need = width * height * 3 // 2
+    if len(data) < need:
+        return None
+    raw = np.frombuffer(data, dtype=np.uint8, count=need)
+    yuv = raw.reshape((height * 3 // 2, width))
+    return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV21)
+
+
+def bgr_to_nv21(img) -> bytes:            # noqa: ANN001
+    """BGR ndarray → NV21 字节流（与 `nv21_to_bgr` 对称）。
+
+    用途：**样例生成与自测**（把现有样例帧转成 NV21，用来验证接入层）；
+    真机链路用不到它（相机自己就出 NV21）。
+    格式要点：NV21 = Y 平面 + 交错 **VU** —— 顺序写成 UV 就是 NV12，
+    **U/V 搞反会让红蓝互换**（这类接入最经典的 bug，自测里专门断言了它）。
+    """
+    h, w = img.shape[:2]
+    if h % 2 or w % 2:                    # YUV420 按 2×2 采样 → 先裁成偶数
+        img = img[:h - h % 2, :w - w % 2]
+        h, w = img.shape[:2]
+    flat = cv2.cvtColor(img, cv2.COLOR_BGR2YUV_I420).reshape(-1)
+    y = flat[:h * w]
+    u = flat[h * w:h * w + h * w // 4]
+    v = flat[h * w + h * w // 4:]
+    vu = np.empty(u.size * 2, dtype=np.uint8)
+    vu[0::2] = v
+    vu[1::2] = u
+    return np.concatenate([y, vu]).tobytes()
+
+
+def check_audio_spec(samplerate: int, channels: int) -> tuple[bool, str]:
+    """校验 SDK 给的音频是否符合 A2 契约（16 kHz 单声道）；返回 (是否可直接用, 说明)。
+
+    Rokid 的音频走**经典蓝牙**通道，采样率/声道**不由我们决定** ——
+    所以真机联调第一件事就是断言这个，不符合要**显式**处理（重采样/降混），
+    而不是让它静默变成"低质 ASR → 频繁拒识"（那样会误判成 N37 门槛太严）。
+    """
+    if not samplerate or not channels:
+        return False, "采样率/声道缺失（SDK 未给出）"
+    if channels > 2:
+        return False, f"{channels} 声道：超出可处理范围，需 SDK 侧改配置"
+    notes = []
+    if channels != A2_CHANNELS:
+        notes.append(f"{channels} ch → 需降混为单声道")
+    if samplerate != A2_SAMPLERATE:
+        notes.append(f"{samplerate} Hz → 需重采样到 {A2_SAMPLERATE} Hz")
+    return (not notes), ("；".join(notes) if notes else
+                         f"符合 A2 契约（{A2_SAMPLERATE} Hz 单声道）")
+
+
 class GlassesAdapter:
     """眼镜 SDK 适配器基类 —— **真机接入时只写这一个子类**。
 
@@ -350,6 +418,159 @@ class ReplayAdapter(GlassesAdapter):
         while not self._stop.is_set():
             img = cv2.imread(str(files[i]))
             if img is not None:
+                on_frame(img)
+            i += 1
+            if i >= len(files):
+                if not self.loop:
+                    break
+                i = 0
+            nxt += interval
+            sleep = nxt - time.perf_counter()
+            if sleep > 0:
+                time.sleep(sleep)
+            else:
+                nxt = time.perf_counter()
+
+    def close(self) -> None:
+        self._stop.set()
+
+
+class RokidGlassesAdapter(GlassesAdapter):
+    """**Rokid Glasses（乐奇 AI 眼镜）**接入层 —— 真机到位时只需提供一个 `bridge`。
+
+    已核实的官方事实（2026-10-15，见 `docs/眼镜接入_供应商确认清单.md`）：
+      · **画面**：SDK 回调给的是 **NV21** 原始 YUV（官方示例 `onNv21Data()`），非 RGB/JPG
+        → 本类负责转成内部统一的 BGR，像素格式的差异到此为止
+      · **音频**：走**经典蓝牙**音频通道 → 采样率/声道不由我们定，必须校验契约
+      · ⚠️ 手机端 App **切回后台会主动停流** → 演示期必须保持前台（或确认保活开关）
+      · SDK 都在 Android 侧（CXR-L 经 Rokid AI APP；或眼镜端裸机开发）→ 拓扑为
+        `眼镜 →(蓝牙/P2P) 手机 App →(WiFi/HTTP) 服务器`
+    本类**不做推理、不改分辨率**（D2：眼镜端零智能）。
+
+    `bridge` 需要实现的最小协议（真机 SDK 包到位后写一个薄壳即可）：
+        set_frame_callback(cb)      # cb(nv21_bytes, width, height)
+        set_audio_callback(cb)      # 可选；cb(pcm_bytes, samplerate, channels)
+        start() / stop()            # 对应 SDK 的启停（如 requestVideoStream/停止）
+        request_stream(fps=…)       # 可选；官方帧率范围 5~30
+    没有 bridge 时**直接报错退出并给出替代方案**，不静默假装在跑。
+    """
+
+    name = "rokid"
+
+    def __init__(self, bridge=None, max_fps: int = 5, want_audio: bool = True):
+        self.bridge = bridge
+        self.max_fps = int(max(1, min(30, max_fps)))    # 官方文档：帧率 5~30
+        self.want_audio = want_audio
+        self._on_frame = None                           # noqa: ANN001
+        self._warned = False
+        self.stats = {"frames": 0, "decode_err": 0, "last_wh": "",
+                      "audio": "未收到", "started": False}
+
+    def open(self, on_frame) -> None:                   # noqa: ANN001
+        if self.bridge is None:
+            raise SystemExit(
+                "[glasses/rokid] 未提供 SDK 桥（bridge）—— 真机还没接。\n"
+                "  · 想先验证 NV21 这条通道：--glasses-adapter nv21 --input <含 *.nv21 的目录>\n"
+                "  · 真机接入：实现 set_frame_callback / start / stop（可选 "
+                "set_audio_callback + request_stream）后传给本类，其余代码一行不改")
+        self._on_frame = on_frame
+        self.bridge.set_frame_callback(self._on_nv21)
+        if self.want_audio and hasattr(self.bridge, "set_audio_callback"):
+            self.bridge.set_audio_callback(self._on_pcm)
+        req = getattr(self.bridge, "request_stream", None)
+        if callable(req):
+            req(fps=self.max_fps)
+        self.bridge.start()
+        self.stats["started"] = True
+        mc.log(f"[glasses/rokid] 已启动（请求 {self.max_fps} fps）"
+               f"—— 注意手机端 App 切后台会停流，演示时保持前台")
+
+    def _on_nv21(self, data, width, height) -> None:    # SDK 回调线程，勿阻塞
+        img = nv21_to_bgr(data, width, height)
+        if img is None:
+            self.stats["decode_err"] += 1
+            if not self._warned:
+                self._warned = True
+                n = len(data) if data is not None else 0
+                mc.log(f"[glasses/rokid] NV21 解码失败：{width}x{height} / {n} 字节"
+                       f"（需要偶数宽高且长度 ≥ w*h*3/2）—— 后续同类不再刷屏")
+            return
+        self.stats["frames"] += 1
+        self.stats["last_wh"] = f"{width}x{height}"
+        self._on_frame(img)
+
+    def _on_pcm(self, data, samplerate, channels) -> None:   # noqa: ANN001
+        """音频通道：先**只校验契约**（是否 16 kHz 单声道），不接 VAD。
+
+        为什么不直接接：真实采样率/格式要真机才知；在未知格式上接 VAD 会把
+        "格式不对"误判成"门槛太严"。校验通过后再把它接到 MicListener（下一步）。
+        """
+        ok, msg = check_audio_spec(samplerate, channels)
+        self.stats["audio"] = f"{samplerate}Hz×{channels}（{'可用' if ok else '需转换'}）"
+        if ok:
+            mc.log(f"[glasses/rokid] 音频 {samplerate} Hz × {channels} ch：{msg}"
+                   f"（尚未接入 VAD，待真机确认后接管 MicListener 的输入）")
+        else:
+            mc.log(f"[glasses/rokid] ⚠️ 音频不符合 A2 契约：{msg}")
+
+    def close(self) -> None:
+        if self.bridge is not None:
+            try:
+                self.bridge.stop()
+            except Exception as exc:  # noqa: BLE001 停流失败不该影响退出
+                mc.log(f"[glasses/rokid] 停流异常：{exc}")
+
+
+class Nv21DirAdapter(GlassesAdapter):
+    """离线替身：把目录里的 `*.nv21` 当成"SDK 推来的 NV21 帧"按 fps 回放。
+
+    价值：**NV21 这条路径今天就能验证**（不需要眼镜）—— 与真机共用同一个
+    `nv21_to_bgr`，所以"像素格式"这个坑不会等到演示现场才暴露。
+    每帧可配同名 `.json`（`{"width":1920,"height":1080}`）；缺省用 `--glasses-size`。
+    """
+
+    name = "nv21"
+
+    def __init__(self, root, size=(640, 480), fps: float = DEFAULT_SOURCE_FPS,
+                 loop: bool = True):
+        self.root = Path(root)
+        self.size = (int(size[0]), int(size[1]))
+        self.fps = max(1.0, float(fps))
+        self.loop = loop
+        self._stop = threading.Event()
+        self.bad = 0
+
+    def open(self, on_frame) -> None:                   # noqa: ANN001
+        threading.Thread(target=self._run, args=(on_frame,), daemon=True).start()
+
+    def _wh(self, p: Path) -> tuple[int, int]:
+        side = p.with_suffix(".json")
+        if side.exists():
+            try:
+                d = json.loads(side.read_text(encoding="utf-8"))
+                return int(d["width"]), int(d["height"])
+            except Exception:  # noqa: BLE001 sidecar 坏了就用缺省，不算致命
+                pass
+        return self.size
+
+    def _run(self, on_frame) -> None:                   # noqa: ANN001
+        files = sorted(self.root.glob("*.nv21"), key=mc.natural_key) if self.root.is_dir() else []
+        if not files:
+            mc.log(f"[glasses/nv21] 目录里没有 *.nv21：{self.root}"
+                   f"（可用 scripts/make_nv21_samples.py 生成）")
+            return
+        w, h = self._wh(files[0])
+        mc.log(f"[glasses/nv21] 离线回放 NV21 推流：{len(files)} 帧 @ {self.fps:g} fps"
+               f"（{w}x{h}，循环={self.loop}）")
+        interval, i, nxt = 1.0 / self.fps, 0, time.perf_counter()
+        while not self._stop.is_set():
+            p = files[i]
+            w, h = self._wh(p)
+            img = nv21_to_bgr(p.read_bytes(), w, h)
+            if img is None:
+                self.bad += 1
+                mc.log(f"[glasses/nv21] 解码失败：{p.name} @ {w}x{h}")
+            else:
                 on_frame(img)
             i += 1
             if i >= len(files):
@@ -426,16 +647,38 @@ def build_glasses_source(args) -> GlassesSource:
     主循环 / 发帧 / 回显 / 服务端一行都不用动（决策记录 D2/D7）。
     """
     kind = getattr(args, "glasses_adapter", "replay")
-    if kind == "replay":
+
+    def _dir(default):
         d = Path(args.input)
         if not d.is_absolute():
             d = PROJECT_ROOT / d
         if not d.exists():
-            d = DEFAULT_GLASSES_REPLAY
-            mc.log(f"[glasses] --input 不是有效目录，回退到 {d.relative_to(PROJECT_ROOT)}")
-        adapter = ReplayAdapter(d, fps=args.source_fps, loop=not args.no_loop)
+            mc.log(f"[glasses] --input 不是有效目录，回退到 {default.relative_to(PROJECT_ROOT)}")
+            return default
+        return d
+
+    def _size():
+        raw = str(getattr(args, "glasses_size", "640x480")).lower().replace("*", "x")
+        try:
+            w, h = (int(v) for v in raw.split("x", 1))
+            return w, h
+        except Exception:  # noqa: BLE001 写错就退回默认，别让现场卡在参数解析
+            mc.log(f"[glasses] --glasses-size 无法解析：{raw}，用 640x480")
+            return 640, 480
+
+    if kind == "replay":
+        adapter = ReplayAdapter(_dir(DEFAULT_GLASSES_REPLAY),
+                                fps=args.source_fps, loop=not args.no_loop)
+    elif kind == "nv21":
+        # 离线验证 NV21 通道（与真机共用 nv21_to_bgr）
+        adapter = Nv21DirAdapter(_dir(DEFAULT_GLASSES_REPLAY), size=_size(),
+                                 fps=args.source_fps, loop=not args.no_loop)
+    elif kind == "rokid":
+        # 真机：需要一个 SDK 桥。此处**故意不造桩**——没桥就报错并提示替代方案，
+        # 避免"以为在跑真机、其实在跑模拟"这种最误导人的状态。
+        adapter = RokidGlassesAdapter(bridge=None, max_fps=int(args.fps))
     else:
-        raise SystemExit(f"[glasses] 未知适配器：{kind}（当前仅支持 replay）")
+        raise SystemExit(f"[glasses] 未知适配器：{kind}（可选 replay / nv21 / rokid）")
     return GlassesSource(adapter, queue_size=getattr(args, "glasses_queue", GLASSES_QUEUE_SIZE))
 
 
@@ -574,6 +817,58 @@ class ReplayDisplayAdapter(GlassesDisplayAdapter):
         cv2.imwrite(str(self.dir / f"display_{self.n:04d}.jpg"), img)
 
 
+class MonoDisplayAdapter(GlassesDisplayAdapter):
+    """**单绿色镜片**显示适配器（装饰器）：把彩色 BGR 画面压成"单色 + 亮度 + 轮廓"。
+
+    为什么必须有这一层：Rokid Glasses 的显示是**单绿色** Micro-LED + 衍射光波导
+    （单光引擎"一拖二"双目），镜片能表达的只有**亮度**（色相固定为绿）——
+    我们那套"不同器官用不同颜色区分"的彩色半透明掩膜，投到镜片上会**退化成一片同色**，
+    信息直接丢失。对策：
+      · 颜色维度失效 → 改用 **轮廓线（edges）+ 亮度分级**：掩膜边界描边（相邻器官仍可分辨）、
+        掩膜内部按亮度区分
+      · 最稳的演示形态仍是"镜片只显示 HUD 文字，彩色影像放平板"（N47 半真链路）
+
+    它可以**离线验证**：包一个 `ReplayDisplayAdapter` 就能落盘看"镜片里会是什么样"。
+    """
+
+    name = "mono"
+
+    def __init__(self, inner: GlassesDisplayAdapter, edges: bool = True,
+                 gamma: float = 1.0, gain: float = 1.0):
+        self.inner = inner
+        self.edges = edges
+        self.gamma = float(gamma)
+        self.gain = float(gain)
+        self.stats = {"n": 0, "last_mean": 0.0, "last_edge": 0.0}
+
+    def open(self) -> None:
+        self.inner.open()
+
+    def to_mono(self, img):                # noqa: ANN001
+        """BGR → 单绿 BGR（R=B=0，G=亮度）。抽成公有方法便于单测 / 离线看图。"""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if self.gamma != 1.0:
+            lut = ((np.arange(256) / 255.0) ** self.gamma * 255.0).astype(np.uint8)
+            gray = cv2.LUT(gray, lut)
+        if self.gain != 1.0:
+            gray = cv2.convertScaleAbs(gray, alpha=self.gain)
+        if self.edges:
+            e = cv2.Canny(gray, 40, 120)
+            gray = cv2.max(gray, e)        # 描边：相邻掩膜/器官的边界仍可分辨
+            self.stats["last_edge"] = float(e.mean())
+        mono = np.zeros_like(img)
+        mono[:, :, 1] = gray               # OpenCV 通道序为 BGR → 下标 1 = 绿
+        return mono
+
+    def display(self, img) -> None:        # noqa: ANN001
+        self.stats["n"] += 1
+        self.stats["last_mean"] = float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean())
+        self.inner.display(self.to_mono(img))
+
+    def close(self) -> None:
+        self.inner.close()
+
+
 class Renderer:
     """回显器基类：`present(img)` 返回 True 表示"用户要求退出"。"""
 
@@ -676,6 +971,13 @@ def build_renderer(args, out_dir: Path) -> Renderer:
         return FileRenderer(Path(out_dir) / "display", interval)
     if kind == "glasses":
         return ArGlassesRenderer(ReplayDisplayAdapter(Path(out_dir) / "display_ar", interval))
+    if kind == "glasses-mono":
+        # Rokid Glasses 实为**单绿**镜片 → 外面套一层 MonoDisplayAdapter。
+        # 真机显示适配器到位后，把里面的 ReplayDisplayAdapter 换成它，这层不用改。
+        return ArGlassesRenderer(MonoDisplayAdapter(
+            ReplayDisplayAdapter(Path(out_dir) / "display_ar_mono", interval),
+            edges=not getattr(args, "mono_no_edges", False),
+            gain=float(getattr(args, "mono_gain", 1.0))))
     return NullRenderer()
 
 
@@ -905,6 +1207,110 @@ def to_wav_bytes(audio, samplerate: int) -> bytes:
         w.setframerate(samplerate)
         w.writeframes(pcm.tobytes())
     return buf.getvalue()
+
+
+def glasses_selftest(out_dir: Path | None = None, samples: str = "") -> int:
+    """眼镜通道离线自测（Rokid Glasses）：**不接真机、不发请求**，只验"我们这侧的假设"。
+
+    每条都对应一个真机上会踩的坑：
+      ① NV21 结构约束 —— 长度必须 = w·h·3/2、宽高必须偶数（奇数必然错位 → 花屏）
+      ② **红蓝不互换** —— NV21(VU) 与 NV12(UV) 写反是这类接入最经典的 bug，
+         用纯色块断言通道序，比"肉眼看图"可靠得多
+      ③ 往返保真 —— 报告 PSNR（色度 2×2 下采样必然有损，只判"没崩"）
+      ④ **单绿镜片** —— 证明"彩色掩膜投到单色屏上会丢颜色维度"（这是设计理由，不是猜测）
+      ⑤ 音频契约 —— 16 kHz 单声道才可直接进 A2；否则必须先降混 / 重采样
+      ⑥ NV21 样例目录离线回放（有样例就顺带验一次 `--glasses-adapter nv21` 通道）
+    """
+    out = Path(out_dir) if out_dir else (PROJECT_ROOT / "runs" / "glasses_selftest")
+    out.mkdir(parents=True, exist_ok=True)
+    mc.log("=" * 74)
+    mc.log("眼镜通道离线自测（Rokid Glasses：NV21 画面 + 单绿镜片 + 音频契约）")
+    mc.log(f"输出目录：{out}")
+    rows: list = []
+
+    # ① 结构约束
+    good = b"\x00" * (64 * 64 * 3 // 2)
+    ok1 = (nv21_to_bgr(good, 64, 64) is not None
+           and nv21_to_bgr(good, 63, 64) is None
+           and nv21_to_bgr(b"\x00" * 16, 64, 64) is None)
+    rows.append(("① NV21 结构约束（偶数宽高 + 长度 ≥ w·h·3/2）", ok1,
+                 "64×64 通过；63×64 与短缓冲被拒"))
+
+    # ② 红蓝不互换
+    blk = np.zeros((64, 64, 3), dtype=np.uint8)
+    blk[0:32, 0:32] = (0, 0, 255)          # 纯红（BGR 序）
+    blk[0:32, 32:64] = (255, 0, 0)         # 纯蓝
+    blk[32:64, 0:32] = (0, 255, 0)         # 纯绿
+    back = nv21_to_bgr(bgr_to_nv21(blk), 64, 64)
+    r = back[8:24, 8:24].reshape(-1, 3).mean(axis=0)
+    b = back[8:24, 40:56].reshape(-1, 3).mean(axis=0)
+    g = back[40:56, 8:24].reshape(-1, 3).mean(axis=0)
+    ok2 = bool(r[2] > r[0] + 30 and b[0] > b[2] + 30 and g[1] > g[0] + 30)
+    rows.append(("② 红蓝不互换（NV21=VU；写反成 NV12 会红蓝颠倒）", ok2,
+                 f"红块 BGR≈{np.round(r)}｜蓝块≈{np.round(b)}｜绿块≈{np.round(g)}"))
+
+    # ③ 往返保真（用平滑图，硬边界会把 PSNR 拉低）
+    gy, gx = np.mgrid[0:120, 0:160]
+    smooth = np.dstack([gx * 1.5, gy * 1.6, (gx + gy) * 0.9]).astype(np.uint8)
+    sm2 = nv21_to_bgr(bgr_to_nv21(smooth), 160, 120)
+    mse = float(np.mean((smooth.astype(np.float32) - sm2.astype(np.float32)) ** 2))
+    psnr = 99.0 if mse <= 1e-9 else 10.0 * float(np.log10(255.0 ** 2 / mse))
+    rows.append(("③ NV21 往返保真（色度必有损，只判“没崩”）", psnr >= 25.0,
+                 f"PSNR {psnr:.1f} dB（阈值 ≥ 25）"))
+    cv2.imwrite(str(out / "nv21_roundtrip.png"), np.hstack([smooth, sm2]))
+
+    # ④ 单绿镜片：颜色维度确实丢失
+    two = np.zeros((64, 64, 3), dtype=np.uint8)
+    two[8:56, 8:32] = (0, 0, 255)          # 类别 A：红
+    two[8:56, 32:56] = (255, 128, 0)       # 类别 B：蓝青
+    mono = MonoDisplayAdapter(ReplayDisplayAdapter(out / "mono"), edges=True)
+    mono.open()
+    mono.display(two)
+    mono.close()
+    m = mono.to_mono(two)
+    ok4 = bool(m[:, :, 0].max() == 0 and m[:, :, 2].max() == 0 and m[:, :, 1].max() > 0)
+    ga = float(cv2.cvtColor(two[16:48, 12:28], cv2.COLOR_BGR2GRAY).mean())
+    gb = float(cv2.cvtColor(two[16:48, 36:52], cv2.COLOR_BGR2GRAY).mean())
+    rows.append(("④ 单绿镜片：颜色维度丢失（R/B 通道全 0）", ok4,
+                 f"类别 A 亮度 {ga:.0f} / B {gb:.0f}（差 {abs(ga - gb):.0f}）"
+                 f"→ 单色后只能靠亮度与轮廓区分"))
+    cv2.imwrite(str(out / "mono_compare.png"), np.hstack([two, m]))
+
+    # ⑤ 音频契约
+    a1, m1 = check_audio_spec(16000, 1)
+    a2, m2 = check_audio_spec(48000, 2)
+    a3, m3 = check_audio_spec(48000, 6)
+    rows.append(("⑤ 音频契约校验（16k 单声道可直接进 A2）", bool(a1 and not a2 and not a3),
+                 f"16k×1→{m1}｜48k×2→{m2}｜48k×6→{m3}"))
+
+    # ⑥ NV21 样例目录离线回放
+    d = Path(samples) if samples else (PROJECT_ROOT / "data" / "samples" / "glasses_nv21")
+    if not d.is_absolute():
+        d = PROJECT_ROOT / d
+    if d.is_dir() and list(d.glob("*.nv21")):
+        ad = Nv21DirAdapter(d, fps=20.0, loop=False)
+        box: list = []
+        ad.open(lambda im: box.append(im))     # noqa: E731
+        time.sleep(1.0)
+        ad.close()
+        shape = box[0].shape if box else "-"
+        rows.append((f"⑥ NV21 目录离线回放（--glasses-adapter nv21）", len(box) > 0,
+                     f"{d.name}/ 取到 {len(box)} 帧，尺寸 {shape}"))
+    else:
+        rows.append(("⑥ NV21 目录离线回放（--glasses-adapter nv21）", True,
+                     f"跳过（{d} 下无 *.nv21；可跑 scripts/make_nv21_samples.py 生成）"))
+
+    mc.log("-" * 74)
+    bad = 0
+    for name, ok, note in rows:
+        tag = "PASS" if ok else "FAIL"
+        mc.log(f"  [{tag}] {name}")
+        mc.log(f"           {note}")
+        bad += 0 if ok else 1
+    mc.log("-" * 74)
+    mc.log(f"结果：{len(rows) - bad}/{len(rows)} PASS"
+           f"（样张见 {out.relative_to(PROJECT_ROOT)}/nv21_roundtrip.png、mono_compare.png）")
+    return 0 if bad == 0 else 1
 
 
 def mic_selftest(seconds: float = 3.0, device: int | None = None) -> int:
@@ -1621,9 +2027,12 @@ def parse_args(argv=None):
                         "url=网络视频流（手机 IP Webcam 当模拟眼镜）；默认 video")
     p.add_argument("--input", default="data/samples/acdc",
                    help="video 源的输入路径（mp4 或帧目录）；glasses 源的 replay 适配器也用它")
-    p.add_argument("--glasses-adapter", default="replay", choices=["replay"],
-                   help="眼镜适配器（N34）：replay=用样例帧目录模拟眼镜推流；"
-                        "真机 SDK 到位后在 build_glasses_source() 里注册新适配器")
+    p.add_argument("--glasses-adapter", default="replay", choices=["replay", "nv21", "rokid"],
+                   help="眼镜适配器（N34/N52）：replay=用样例帧目录模拟眼镜推流（**非** NV21）；"
+                        "nv21=离线回放 NV21 样例目录（验证 Rokid 像素格式，无需真机）；"
+                        "rokid=真机接入（需提供 SDK 桥，未接会明确报错）")
+    p.add_argument("--glasses-size", default="640x480",
+                   help="NV21 样例的缺省分辨率 WxH（每帧同名 .json 里有 width/height 时优先用它）")
     p.add_argument("--glasses-queue", type=int, default=GLASSES_QUEUE_SIZE,
                    help=f"眼镜帧队列长度（满则丢最旧，默认 {GLASSES_QUEUE_SIZE}）："
                         "吸收 SDK 帧率高于服务端处理能力时的积压")
@@ -1643,11 +2052,17 @@ def parse_args(argv=None):
     p.add_argument("--display", choices=["result", "blend"], default="result",
                    help="显示方式：result=显示服务器结果图；blend=与实时画面叠加")
     p.add_argument("--no-show", dest="show", action="store_false", help="无头模式（不弹窗）")
-    p.add_argument("--renderer", choices=["auto", "window", "file", "none", "glasses"],
+    p.add_argument("--renderer",
+                   choices=["auto", "window", "file", "none", "glasses", "glasses-mono"],
                    default="auto",
                    help="回显方式（N35）：window=桌面窗口；file=按间隔把渲染画面落盘；"
-                        "none=不回显（自动化/控制台自渲染）；glasses=交给眼镜显示适配器；"
-                        "auto=跟随 --show（默认）")
+                        "none=不回显（自动化/控制台自渲染）；glasses=交给眼镜显示适配器（彩色）；"
+                        "glasses-mono=**单绿镜片**（Rokid Glasses：彩色掩膜会退化成同色，"
+                        "故改走轮廓+亮度）；auto=跟随 --show（默认）")
+    p.add_argument("--mono-gain", type=float, default=1.0,
+                   help="单绿镜片的亮度增益（glasses-mono 时生效，1.0=不调）")
+    p.add_argument("--mono-no-edges", action="store_true",
+                   help="单绿镜片关掉轮廓描边（默认开：相邻器官的边界靠它分辨）")
     p.add_argument("--render-interval", type=float, default=2.0,
                    help="file/glasses 回显的落盘间隔秒（默认 2.0）")
     p.add_argument("--save-frames", action="store_true", help="落盘抽样帧（每 10 个已发帧一组）")
@@ -1688,6 +2103,11 @@ def parse_args(argv=None):
                    help="VAD 回放自测阈值（默认 0.005）")
     p.add_argument("--vad-send", action="store_true",
                    help="VAD 回放自测时把切出的第一段发 A2（需要服务端在跑）")
+    p.add_argument("--glasses-selftest", action="store_true",
+                   help="眼镜通道离线自测（Rokid Glasses：NV21 结构 / 红蓝序 / 往返 / "
+                        "单绿镜片 / 音频契约），不接真机、不发请求")
+    p.add_argument("--glasses-selftest-samples", default="", metavar="DIR",
+                   help="自测用的 NV21 样例目录（默认 data/samples/glasses_nv21）")
     p.add_argument("--config", default=_known.config,
                    help=f"配置文件（YAML）。不指定时自动读 {CONFIG_DEFAULT_REL}（存在才读）；"
                         "配置文件只提供**默认值**，命令行参数优先")
@@ -1718,6 +2138,8 @@ def main(argv=None) -> int:
     if args.vad_selftest:
         return vad_selftest(args.vad_selftest, args.vad_threshold,
                             url=args.url, send=args.vad_send)
+    if args.glasses_selftest:
+        return glasses_selftest(samples=args.glasses_selftest_samples)
     runner = LiveRunner(args)
     try:
         return runner.run()
