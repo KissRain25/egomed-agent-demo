@@ -256,6 +256,8 @@ def run_online(frames_dir: Path, modality: str, target: str, args):
         hz = requests.get(f"{url}/healthz", timeout=3).json()
     except Exception as exc:
         raise SystemExit(f"服务端不可用（{exc}）：请先 `python server/api.py --real` 并等预热")
+    if hz.get("state") == "warming":
+        raise SystemExit("服务端正在预热（state=warming）：请等 /healthz 返回 200 再跑在线模式")
     if not hz.get("real_engine"):
         raise SystemExit("服务端当前是**假实现**，请用 --real 启动后再跑在线模式")
 
