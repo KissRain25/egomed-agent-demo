@@ -1,0 +1,29 @@
+# EgoMed-Agent 配置模板（v0.1）
+# 优先级：命令行参数 > 环境变量 > 本文件 > 内置默认值
+# 说明：本文件不存任何密钥；服务端地址默认本机回环。
+
+[server]
+# 服务端地址（A1/A2 端点均挂在此前缀下）
+url = "http://127.0.0.1:8000"
+# 单次请求超时（秒）。实测单帧 200~500ms，留 3s 余量
+timeout_s = 3.0
+
+[capture]
+# 采集源：video（帧目录/视频文件）| cam（本机摄像头）| url（手机 IP Webcam）| glasses（Rokid）
+source = "video"
+# 发给服务端的帧率（不是源帧率；源默认 20fps，只抽 5fps 发送）
+fps = 5.0
+# 压缩规格（契约）：长边 ≤1280、质量 80、单帧 ≤300KB
+max_side = 1280
+jpeg_quality = 80
+max_bytes = 307200
+
+[display]
+# 回显方式：window（窗口）| file（落盘）| glasses-mono（单绿镜片）| null（不显示）
+renderer = "window"
+
+[logging]
+# 日志级别：debug | info | warn | error
+level = "info"
+# 日志目录（相对项目根）
+dir = "runs/logs"
