@@ -1,21 +1,26 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""EgoMed-Agent 统一启动器（骨架 v0.1）
+"""EgoMed-Agent 统一启动器 v0.2（已落在仓库根目录）
 
-把原来散在 11 个 .bat 里的"解释器解析 + 参数拼装"收敛到一处，
-并提供统一子命令与返回码，供 GUI / 脚本 / CI 调用。
+把原来散在 11 个 .bat 里的"解释器解析 + 参数拼装"收敛到一处：
+根目录 `egomed.bat` 只做解释器兜底 + chcp + 退出码透传，全部子命令在本文件实现。
+旧 bat（启动模拟眼镜 / 现场控制台 / 环境自检）已降级为**转发壳**，行为不变。
 
-本文件当前是**骨架**：解释器探测、配置加载、环境自检（doctor）已实装；
-demo / regress / soak 等长任务先给"未实现"占位，按增量 2~4 逐步接入。
-计划见同目录 `计划_软件化实施.md`。
+已实装：doctor / console / demo / sim / check / calibrate / diag
+占位：regress / soak（增量 2 接入）
+计划见 `软件制作/计划_软件化实施.md`。
 
 用法
 ----
     python launcher.py                 # 打开 GUI（默认）
     python launcher.py doctor          # 环境自检（返回码 0 通过 / 2 有问题）
+    python launcher.py demo            # 一键演示：起服务端 → 等预热 → 开 GUI
+    python launcher.py demo --dry-run  # 只打印流程与服务端状态，不起进程
     python launcher.py console         # 直接开 GUI
     python launcher.py calibrate       # 机位校准
     python launcher.py diag            # 生成诊断包
+    python launcher.py sim             # 兼容旧「启动模拟眼镜」：服务端 + 命令行客户端
+    python launcher.py check           # 兼容旧「环境自检」：scripts/check_env.py 详细检查
     python launcher.py regress         # 一键回归（占位）
     python launcher.py soak -m 60      # 长稳测试（占位）
 
@@ -38,7 +43,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONTRACT_VERSION = "v1.0.3"
 
 RC_OK = 0
@@ -268,6 +273,30 @@ def cmd_diag(args) -> int:
     return rc
 
 
+def forward_script(rel_path: str, args, cwd: Path | None = None) -> int:
+    """把子命令原样转发给既有脚本：只接管"用哪个解释器、在哪个目录跑"。
+
+    兼容壳专用——旧 bat 的行为必须一字不改，所以不做任何参数改写。
+    """
+    root = find_project_root()
+    target = root / rel_path
+    if not target.exists():
+        log("[!!]", f"E3002 找不到脚本：{target}")
+        return RC_ENV
+    return subprocess.call([sys.executable, str(target)] + list(args.rest),
+                           cwd=str(cwd or root))
+
+
+def cmd_sim(args) -> int:
+    """兼容旧「启动模拟眼镜.bat」：起服务端 + 命令行客户端（不开 GUI）。"""
+    return forward_script("client/launch_sim_glasses.py", args)
+
+
+def cmd_check(args) -> int:
+    """兼容旧「环境自检.bat」：scripts/check_env.py 的十余项详细检查。"""
+    return forward_script("scripts/check_env.py", args)
+
+
 def cmd_not_implemented(name: str) -> int:
     log("[--]", f"子命令 `{name}` 尚未实现（骨架阶段）")
     log("     ", "计划见：软件制作/计划_软件化实施.md 的增量 2~4")
@@ -365,17 +394,20 @@ def build_parser() -> argparse.ArgumentParser:
                    version=f"egomed {VERSION} (contract {CONTRACT_VERSION})")
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("doctor", help="环境自检").set_defaults(func=cmd_doctor)
-
-    for name, fn, help_text in (
-        ("console", cmd_console, "打开现场控制台（GUI）"),
-        ("calibrate", cmd_calibrate, "机位校准"),
-        ("diag", cmd_diag, "生成诊断包"),
-        ("demo", cmd_demo, "一键演示（起服务端 + GUI）"),
-        ("regress", cmd_regress, "一键回归"),
-        ("soak", cmd_soak, "长稳测试"),
+    # 第 4 列为 True 的是"兼容壳"子命令：连 -h 也要原样透传给下游脚本，
+    # 否则旧 bat 的 --help 行为会变（现场排障时容易踩）。
+    for name, fn, help_text, passthru_all in (
+        ("doctor", cmd_doctor, "环境自检（精简版）", False),
+        ("console", cmd_console, "打开现场控制台（GUI，默认）", False),
+        ("demo", cmd_demo, "一键演示（起服务端 + GUI）", False),
+        ("sim", cmd_sim, "兼容壳：服务端 + 命令行客户端（旧「启动模拟眼镜」）", True),
+        ("check", cmd_check, "兼容壳：详细环境检查（旧「环境自检」）", True),
+        ("calibrate", cmd_calibrate, "机位校准", False),
+        ("diag", cmd_diag, "生成诊断包", False),
+        ("regress", cmd_regress, "一键回归", False),
+        ("soak", cmd_soak, "长稳测试", False),
     ):
-        sp = sub.add_parser(name, help=help_text)
+        sp = sub.add_parser(name, help=help_text, add_help=not passthru_all)
         sp.add_argument("rest", nargs=argparse.REMAINDER, help="透传给下游脚本的参数")
         sp.set_defaults(func=fn)
 

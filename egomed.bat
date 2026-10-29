@@ -2,12 +2,14 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-rem EgoMed-Agent 唯一入口（骨架 v0.1）
+rem EgoMed-Agent 唯一入口 v0.2（仓库根目录）
 rem   用法：egomed.bat            -> 打开现场控制台（GUI）
-rem         egomed.bat doctor     -> 环境自检
+rem         egomed.bat demo       -> 一键演示（起服务端 + GUI）
+rem         egomed.bat doctor     -> 环境自检（精简）
+rem         egomed.bat check      -> 详细环境检查
 rem         egomed.bat diag       -> 生成诊断包
 rem         egomed.bat --help     -> 查看全部子命令
-rem   解释器解析已收敛到 launcher.py，本文件只做兜底，不再重复 6 行候选路径。
+rem   解释器解析只在本文件兜底一处；其余旧 bat 已改为转发壳，不再各自重复。
 
 set "PY=%EGOMED_PY%"
 if not defined PY if exist "D:\ScienceApp\anaconda\envs\egomed\python.exe" set "PY=D:\ScienceApp\anaconda\envs\egomed\python.exe"

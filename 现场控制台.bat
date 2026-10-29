@@ -2,31 +2,11 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-rem EgoMed-Agent 现场控制台（N26）—— 双击打开图形界面
-rem   选源 -> 设目标 -> 点「开始」，全程看实时指标与画面；「录制」可留演示素材
-rem 解释器解析顺序：EGOMED_PY 环境变量 -> 常见 conda 环境 -> PATH 中的 python
+rem 【转发壳】N53 增量 1：等价命令 egomed.bat console
+rem   EgoMed-Agent 现场控制台（N26）—— 选源 -> 设目标 -> 点「开始」，看实时指标与画面
+rem   解释器解析已收敛到 egomed.bat + launcher.py，本文件不再自己找 python。
 
-set "PY=%EGOMED_PY%"
-if not defined PY if exist "D:\ScienceApp\anaconda\envs\egomed\python.exe" set "PY=D:\ScienceApp\anaconda\envs\egomed\python.exe"
-if not defined PY if exist "%USERPROFILE%\anaconda3\envs\egomed\python.exe" set "PY=%USERPROFILE%\anaconda3\envs\egomed\python.exe"
-if not defined PY if exist "%USERPROFILE%\miniconda3\envs\egomed\python.exe" set "PY=%USERPROFILE%\miniconda3\envs\egomed\python.exe"
-if not defined PY if exist "%LOCALAPPDATA%\anaconda3\envs\egomed\python.exe" set "PY=%LOCALAPPDATA%\anaconda3\envs\egomed\python.exe"
-if not defined PY if exist "C:\ProgramData\anaconda3\envs\egomed\python.exe" set "PY=C:\ProgramData\anaconda3\envs\egomed\python.exe"
-if not defined PY (
-    where python >nul 2>&1 && set "PY=python"
-)
-
-if not defined PY (
-    echo [错误] 没找到可用的 Python 解释器。
-    echo   办法 1：先双击「安装环境.bat」创建 egomed 环境；
-    echo   办法 2：设置环境变量 EGOMED_PY 指向你的 python.exe
-    echo.
-    pause
-    exit /b 1
-)
-
-echo [info] 使用解释器：%PY%
-"%PY%" "client\live_console.py" %*
+call "%~dp0egomed.bat" console %*
 set "RC=%errorlevel%"
 
 if not "%RC%"=="0" (
