@@ -274,9 +274,73 @@ def cmd_not_implemented(name: str) -> int:
     return RC_NOTIMPL
 
 
+def load_launch_helper(root: Path):
+    """复用 client/launch_sim_glasses.py 的启停与预热等待，不重复实现。
+
+    该模块的 main() 在 __main__ 保护里，import 无副作用。
+    """
+    client_dir = str(root / "client")
+    if client_dir not in sys.path:
+        sys.path.insert(0, client_dir)
+    import launch_sim_glasses as lsg  # noqa: E402
+    return lsg
+
+
 def cmd_demo(args) -> int:
-    """一键演示：起服务端（等健康）→ 开 GUI。增量 1 内实装。"""
-    return cmd_not_implemented("demo")
+    """一键演示：起服务端 → 等预热就绪 → 开现场控制台（GUI）。
+
+    就绪判据（与 launch_sim_glasses 一致，非另创）：
+      ① 服务端日志出现 "真引擎启动" / "Uvicorn running"
+      ② 或 /healthz 返回 200 且 real_engine=真
+    上限 240s（含 ASR medium 加载，实测约 78s）。
+
+    --dry-run：只打印将要执行的步骤与服务端当前状态，不启动任何进程。
+    """
+    root = find_project_root()
+    cfg, _ = load_config(root)
+    url = cfg.get("server", {}).get("url", "http://127.0.0.1:8000")
+    dry = "--dry-run" in args.rest
+
+    console = root / "client" / "live_console.py"
+    helper = root / "client" / "launch_sim_glasses.py"
+    if not console.exists() or not helper.exists():
+        log("[!!]", f"E3002 缺少演示所需脚本（console={console.exists()}, helper={helper.exists()}）")
+        return RC_ENV
+
+    if dry:
+        log("[--]", "演示流程预演（不启动任何进程）：")
+        log("     ", "1) 环境检查（同 doctor）")
+        log("     ", "2) 起服务端：server/api.py --real")
+        log("     ", "3) 等就绪：日志标记 + /healthz.real_engine，上限 240s")
+        log("     ", "4) 打开现场控制台（GUI）")
+        log("     ", "5) 控制台退出后关闭服务端，清理进程")
+        log("[--]", f"服务端当前状态：{'已在运行' if server_healthy(url) else '未启动'}")
+        return RC_OK
+
+    if server_healthy(url):
+        log("[--]", f"服务端已在运行（{url}），跳过启动，直接开控制台")
+        return subprocess.call([sys.executable, str(console)], cwd=str(root))
+
+    try:
+        lsg = load_launch_helper(root)
+    except Exception as exc:
+        log("[!!]", f"E3002 载入一键演示脚本失败：{exc}")
+        return RC_ENV
+
+    proc = None
+    try:
+        proc = lsg.start_server()
+        if not lsg.wait_warmup(proc):
+            log("[!!]", "E1002 服务端未能就绪（启动失败或预热超时），请查看 runs/launch/")
+            return RC_CONN
+        log("[OK]", "服务端已就绪，打开现场控制台（关闭窗口即结束并关闭服务端）")
+        return subprocess.call([sys.executable, str(console)], cwd=str(root))
+    except KeyboardInterrupt:
+        log("[--]", "用户中断")
+        return RC_CANCELLED
+    finally:
+        if proc is not None:
+            lsg.stop_server(proc)
 
 
 def cmd_regress(args) -> int:
@@ -321,11 +385,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     setup_stdout()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    # 用 parse_known_args：子命令后的额外参数（含 --xxx）统一收进 rest 透传给下游脚本。
+    # 不用 nargs=REMAINDER —— 在子解析器里遇到 "-" 开头的参数仍会被判为 unrecognized。
+    args, extras = parser.parse_known_args(argv)
+    args.rest = list(getattr(args, "rest", []) or []) + list(extras)
 
     if not getattr(args, "func", None):
         # 无子命令 = 打开 GUI（最常用路径）
-        args.rest = []
         return cmd_console(args)
 
     try:
