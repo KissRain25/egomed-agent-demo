@@ -47,6 +47,9 @@
 | 运行 → 长稳测试（60 分钟） | `egomed.bat soak --minutes 60` | `client/run_soak.py` |
 | 运行 → 停止长任务 | —（GUI 内） | 先 CTRL_BREAK，5s 不退再 taskkill /T |
 
+**演示前必做**：`egomed.bat warmup --keep-server` —— 起服务端并把 **ASR 冷启动**（机器首次语音请求实测 >180s）
+提前吃掉。不预热的话，台上第一句话会撞冷启动，客户端 15s 稳态超时 → 报 E1002「连不上服务端」。
+
 ## 增量 3（配置持久化）已完成 — 2026-11-02
 
 `config.toml` 由 `egomed_config.py` 统一读写，优先级：**命令行 > 环境变量 > 文件 > 内置默认**。

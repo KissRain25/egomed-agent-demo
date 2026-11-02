@@ -6,7 +6,7 @@
 根目录 `egomed.bat` 只做解释器兜底 + chcp + 退出码透传，全部子命令在本文件实现。
 旧 bat（启动模拟眼镜 / 现场控制台 / 环境自检）已降级为**转发壳**，行为不变。
 
-已实装：doctor / console / demo / sim / check / calibrate / diag / regress / soak
+已实装：doctor / console / demo / sim / check / calibrate / diag / regress / soak / warmup
 版本号唯一来源：根目录 `VERSION` 文件（本文件的 VERSION 常量由它读出，缺文件才回退）
 计划见 `软件制作/计划_软件化实施.md`。
 
@@ -23,6 +23,7 @@
     python launcher.py check           # 兼容旧「环境自检」：scripts/check_env.py 详细检查
     python launcher.py regress         # 一键回归（→ client/run_regression.py）
     python launcher.py soak -m 60      # 长稳测试（→ client/run_soak.py）
+    python launcher.py warmup          # 演示前预热：吃掉 ASR 冷启动（--keep-server 保留服务端）
 
 返回码
 ------
@@ -38,6 +39,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -412,6 +414,106 @@ def cmd_soak(args) -> int:
     return forward_script("client/run_soak.py", args)
 
 
+def cmd_warmup(args) -> int:
+    """演示前一键预热：把 **ASR 冷启动** 提前吃掉。
+
+    为什么需要它
+    ------------
+    服务端 `--real` 的"预热"只把 ASR 权重读进显存（`asr_medical.warmup()` 里只有
+    `_get_model()`），**一次推理都不跑**。所以机器上第一次真实语音请求才触发
+    CUDA kernel / cuDNN 初始化，2026-11-02 实测：#1 >180s（被客户端 15s 掐断）
+    → #2 75s → #3 才 2s。而现场第一句话就会撞上这个 —— 用户看到的是
+    "连不上服务端"，不是"正在预热"。
+
+    这条命令做的事：起服务端 → 等就绪 → 发一次样例语音（长超时）→ 报耗时。
+    默认跑完关掉服务端；`--keep-server` 留着直接演示。
+
+    用法
+    ----
+        egomed.bat warmup                     # 预热完关服务端
+        egomed.bat warmup --keep-server       # 预热完留着，接着 demo/console
+        egomed.bat warmup --timeout 420       # 首次语音等更久（老机器/首次）
+    """
+    root = find_project_root()
+    cfg, _ = load_config(root)
+    url = cfg.get("server", {}).get("url", "http://127.0.0.1:8000")
+
+    rest = list(args.rest)
+    if "-h" in rest or "--help" in rest:
+        # 本子命令是透传壳（--help 会落到 rest），这里自己答，别真去起服务端
+        log("[--]", "用法：egomed.bat warmup [--keep-server] [--timeout 秒]")
+        log("     ", "  起服务端 → 等就绪 → 发一次样例语音吃掉 ASR 冷启动 → 关闭（或保留）")
+        log("     ", "  --keep-server  预热完不关服务端，接着 console / demo 用")
+        log("     ", "  --timeout N    首次语音最长等待（默认 300s；老机器可给 420）")
+        return RC_OK
+    keep = "--keep-server" in rest
+    timeout = 300.0
+    if "--timeout" in rest:
+        i = rest.index("--timeout")
+        if i + 1 < len(rest):
+            try:
+                timeout = float(rest[i + 1])
+            except ValueError:
+                log("[!!]", f"--timeout 需要数字，收到 {rest[i + 1]!r}，改用 {timeout:.0f}s")
+
+    client_dir = str(root / "client")
+    if client_dir not in sys.path:
+        sys.path.insert(0, client_dir)
+    try:
+        import mock_client as mc
+    except Exception as exc:  # noqa: BLE001
+        log("[!!]", f"E3002 载入客户端工具失败：{exc}")
+        return RC_ENV
+
+    proc = None
+    started_by_us = False
+    try:
+        if server_healthy(url):
+            log("[--]", f"服务端已在运行（{url}），直接预热语音通道")
+        else:
+            try:
+                lsg = load_launch_helper(root)
+            except Exception as exc:  # noqa: BLE001
+                log("[!!]", f"E3002 载入一键演示脚本失败：{exc}")
+                return RC_ENV
+            log("[--]", "启动服务端并等待就绪（真引擎预热约 60~90s）…")
+            proc = lsg.start_server()
+            started_by_us = True
+            if not lsg.wait_warmup(proc):
+                log("[!!]", "E1002 服务端未能就绪，预热中止（日志见 runs/launch/）")
+                return RC_CONN
+            log("[OK]", "服务端已就绪")
+
+        sid = mc.make_session_id("warmup")
+        log("[--]", f"发送样例语音预热 ASR（首次最长等 {timeout:.0f}s，这一步就是全部意义）…")
+        t0 = time.time()
+        target, used_wav, _payload, terr = mc.set_target(
+            url, sid, None, 15.0, verbose=True, first_timeout=timeout)
+        spent = time.time() - t0
+        if target:
+            log("[OK]", f"ASR 通道已预热：{target!r}（用 {used_wav}，耗时 {spent:.1f}s）")
+            log("     ", "之后现场每句话都是 1~2 秒量级，不会再撞冷启动")
+        else:
+            log("[!!]", f"E1003 预热未拿到目标（err={terr}，耗时 {spent:.1f}s）")
+            log("     ", "服务端可用但语音通道没热起来，演示前建议重试一次")
+            return RC_CONN
+
+        if keep:
+            log("[OK]", f"服务端保留运行（{url}），可直接 `egomed.bat console` 或 `egomed.bat demo`")
+            started_by_us = False      # 交给用户，别在 finally 里关
+        return RC_OK
+    except KeyboardInterrupt:
+        log("[--]", "用户中断")
+        return RC_CANCELLED
+    finally:
+        if proc is not None and started_by_us:
+            try:
+                load_launch_helper(root).stop_server(proc)
+                log("[--]", "服务端已关闭（加 --keep-server 可保留）")
+            except Exception:  # noqa: BLE001
+                pass
+
+
 # ---------------------------------------------------------------- 入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -436,6 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("diag", cmd_diag, "生成诊断包", False),
         ("regress", cmd_regress, "一键回归（mock + real 两套验收）", True),
         ("soak", cmd_soak, "长稳测试（默认 60 分钟）", True),
+        ("warmup", cmd_warmup, "演示前预热（吃掉 ASR 冷启动，可选 --keep-server）", True),
     ):
         sp = sub.add_parser(name, help=help_text, add_help=not passthru_all)
         sp.add_argument("rest", nargs=argparse.REMAINDER, help="透传给下游脚本的参数")
