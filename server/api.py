@@ -238,6 +238,25 @@ def _error(code: int, message: str, http_status: int = 400) -> JSONResponse:
 _ENGINE_MODULES = None     # (demo, parse_target, transcribe)
 _ENGINE_LOCK = threading.Lock()   # 仅用于保护引擎懒加载（请求串行已改为 per-session）
 _ASR_WARMUP = None         # asr_medical.warmup（A.11），未就绪时为 None
+_ASR_MODULE = None         # asr_medical 模块本身：用来查 is_ready()（推理路径预热状态）
+
+
+def _asr_ready() -> bool:
+    """ASR 推理路径是否已经预热过（只有真引擎才需要关心）。
+
+    拿不到模块（假实现 / 回退到 asr_engine / 老版本没有 is_ready）时一律返回 True ——
+    宁可像以前那样慢，也不能因为查不到状态就把 A2 全挡了。
+    """
+    mod = _ASR_MODULE
+    if mod is None:
+        return True
+    fn = getattr(mod, "is_ready", None)
+    if fn is None:
+        return True
+    try:
+        return bool(fn())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _get_engine():
@@ -247,7 +266,7 @@ def _get_engine():
     A.11：ASR 优先用优化版 asr_medical（接口与 asr_engine.transcribe 完全一致）；
     缺失时回退 asr_engine，保证启动不崩。
     """
-    global _ENGINE_MODULES, _ASR_WARMUP
+    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE
     if _ENGINE_MODULES is not None:
         return _ENGINE_MODULES
     with _ENGINE_LOCK:
@@ -263,10 +282,13 @@ def _get_engine():
         from nl_parser import parse_target
         # A.11：换一行 import（asr_engine -> asr_medical），签名一致；缺失则回退
         try:
+            import asr_medical
             from asr_medical import transcribe, warmup as _asr_warmup
+            _ASR_MODULE = asr_medical       # 留着查 is_ready()（推理路径预热状态）
         except ImportError:
             from asr_engine import transcribe
             _asr_warmup = None
+            _ASR_MODULE = None
         _ASR_WARMUP = _asr_warmup
         _ENGINE_MODULES = (demo, parse_target, transcribe)
         return _ENGINE_MODULES
@@ -752,6 +774,23 @@ async def post_audio(
         return _error(E_INTERNAL, f"读取音频失败：{exc}", 500)
 
     s = _get_session(session_id)
+
+    # ASR 推理路径还没热好 → 立刻 503，别让请求钩住 3 分钟。
+    # 背景：真引擎的"预热"只加载权重，首次 forward 才做 CUDA kernel 加载 / cuDNN
+    # autotune，实测 >180s。让请求干等，客户端只会报"超时/连不上"，更误导人。
+    # 这里回 503 + Retry-After：语义是"服务在，但这一路暂时没准备好"，可重试。
+    if REAL_ENGINE and not _asr_ready():
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "10"},
+            content={
+                "status": "error",
+                "code": E_INTERNAL,
+                "message": "ASR 推理预热中（首次语音要初始化，约 10~60 秒），请稍后重试",
+                "state": "asr_warming",
+                "retry_after_s": 10,
+            })
+
     t0 = time.perf_counter()
     try:
         payload = await run_in_threadpool(handle_audio, session_id, audio_bytes, s)

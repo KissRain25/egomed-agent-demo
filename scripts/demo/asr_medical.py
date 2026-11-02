@@ -27,12 +27,18 @@ EgoMed-Agent 医学语音识别模块（ASR 优化版，契约附录 A.11）
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
 # 延迟导入 faster-whisper：没装它时 import 本模块不报错（server 启动不崩），
 # 首次 transcribe/warmup 才真正加载。
 _MODEL = None
+
+# 推理路径是否"真的跑过一次"（区别于"权重已加载"）
+_ASR_READY = False       # 后台 prime 线程跑完（无论成败）后置 True
+_ASR_PRIMING = False     # 正在跑首次推理
+_ASR_PRIME_ERR = ""      # 预热门槛失败原因（仅日志用）
 
 # 与 asr_engine 同名常量，保证 `from ... import` 的签名兼容（size 参数忽略，
 # 本模块固定 medium）。
@@ -247,13 +253,56 @@ def transcribe(audio, language=None, size=DEFAULT_MODEL):
         return ""
 
 
-def warmup():
-    """预热：把 medium 模型加载进显存（--real 启动时调用一次）。
+def is_ready() -> bool:
+    """推理路径是否已经真跑过一次（供服务端在 A2 上做"预热中"判定）。"""
+    return _ASR_READY
 
-    不预热的话，首个 A2 请求会把 30s 的模型加载算进请求耗时，必超契约
-    3s 超时（与 P0.2 同理）。
+
+def prime_state() -> tuple[bool, bool, str]:
+    """(就绪, 正在预热, 预热失败原因)。服务端用它决定 A2 是放行还是回 503。"""
+    return _ASR_READY, _ASR_PRIMING, _ASR_PRIME_ERR
+
+
+def warmup():
+    """预热：加载权重 + **后台真跑一次推理**（--real 启动时调用一次）。
+
+    为什么不能只 `_get_model()`
+    --------------------------
+    加载权重只是把文件读进显存，**首次 forward 才会**做 CUDA kernel 加载、
+    cuDNN/cuBLAS 算法选择（autotune）、显存池首次分配、beam 解码路径构建。
+    2026-11-02 实测真引擎：第 1 次请求 >180s（被客户端 15s 超时掐断）→
+    第 2 次 75s（排队等第一次真完成）→ 第 3 次才 2s。
+
+    所以这里把"首次推理"挪到后台线程：`_get_model()` 返回后服务端立刻能报 ready
+    （帧推理 A1 不依赖 ASR，不受影响），A2 在 `is_ready()` 变 True 之前由服务端
+    快速返回 503「预热中」，而不是让请求钩住 3 分钟。
     """
-    _get_model()
+    global _ASR_PRIMING
+    _get_model()                       # 权重进显存（约 30s）
+    if _ASR_READY or _ASR_PRIMING:
+        return
+    _ASR_PRIMING = True
+
+    def _prime() -> None:
+        global _ASR_READY, _ASR_PRIMING, _ASR_PRIME_ERR
+        t0 = time.time()
+        try:
+            import numpy as np
+            # 0.6s 静音即可：目的是把初始化成本跑掉，转写内容无所谓
+            # （静音会转成空串，`_run_once` 返回 "" 而不是 None，不会触发降级重试）
+            silence = np.zeros(int(16000 * 0.6), dtype=np.float32)
+            transcribe(silence, language="zh")
+            print(f"[ASR-medical] 推理路径预热完成（{time.time() - t0:.1f}s）", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            _ASR_PRIME_ERR = str(exc)
+            print(f"[ASR-medical] 推理预热失败（{exc}），仍放行 A2"
+                  f"（首个请求可能仍慢）：{time.time() - t0:.1f}s", flush=True)
+        finally:
+            # 失败也置就绪：宁可变慢，也不能让 A2 永远 503（transcribe 自己还有降级路径）
+            _ASR_READY = True
+            _ASR_PRIMING = False
+
+    threading.Thread(target=_prime, name="asr-prime", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------

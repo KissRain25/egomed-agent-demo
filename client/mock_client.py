@@ -153,6 +153,12 @@ def post_multipart(url: str, path: str, session_id: str, field: str,
 
     if resp.status_code != 200:
         msg = payload.get("message") if isinstance(payload, dict) else None
+        # 503 + state=asr_warming：服务端明说"这一路还没热好"，属于**可等**状态。
+        # 用固定前缀 "预热中" 让 set_target 能识别并等待重试，而不是当成故障跳过。
+        if (resp.status_code == 503 and isinstance(payload, dict)
+                and payload.get("state") == "asr_warming"):
+            retry = payload.get("retry_after_s", 10)
+            return payload, elapsed, f"预热中（retry={retry}s）{msg or ''}".strip()
         return payload, elapsed, f"HTTP {resp.status_code} {msg or ''}".strip()
     return payload, elapsed, None
 
@@ -170,7 +176,8 @@ def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: fl
 # ---------------------------------------------------------------- 结果保存
 def set_target(url: str, session_id: str, audio_dir: Path | None = None,
                timeout: float = 15.0, verbose: bool = True,
-               first_timeout: float | None = None):
+               first_timeout: float | None = None,
+               wait_ready_s: float = 120.0):
     """用样例语音给会话设置分割目标（A2）。
 
     **逐个尝试**目录里的 wav，跳过"没听清 / 跨模态歧义（need_confirm）"的，
@@ -185,7 +192,13 @@ def set_target(url: str, session_id: str, audio_dir: Path | None = None,
     **只给第一个 wav** 用的超时。真引擎的"预热"只加载模型权重、不跑推理，
     所以第一次真实语音请求会触发 ASR 首次推理（2026-11-02 实测：第 1 次 >180s 超时、
     第 2 次 75s、第 3 次 2s 才正常）。用稳态超时（15s）去卡冷启动，会把
-    "第一次慢"误判成"服务不可用"，长稳直接放弃。真引擎场景请传 240s 左右。
+    "第一次慢"误判成"服务不可用"，长稳直接放弃。真引擎场景请传 300s 左右。
+
+    `wait_ready_s`
+    --------------
+    服务端新版会在 ASR 推理路径没热好时回 **503 + state=asr_warming**。
+    这种响应不是故障，而是"再等一会"。此处按 10s 节奏重试**同一个 wav**，
+    最多等 `wait_ready_s` 秒（默认 120）。要短超时快速失败就传 0。
     """
     d = Path(audio_dir) if audio_dir else (PROJECT_ROOT / "data" / "samples" / "audio")
     cands = sorted([p for p in d.glob("*.wav")], key=natural_key)
@@ -197,6 +210,21 @@ def set_target(url: str, session_id: str, audio_dir: Path | None = None,
         if i == 0 and first_timeout and verbose:
             log(f"  · 首次语音请求用长超时 {t:.0f}s（ASR 冷启动，后续按 {timeout:.0f}s）")
         payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, t)
+
+        # 服务端回 503「ASR 推理预热中」：这是**可等**状态，不是故障 ——
+        # 等它热好再打同一个 wav（换 wav 没意义，瓶颈在推理初始化不在音频内容）
+        waited = 0.0
+        step = 10.0
+        while isinstance(err, str) and err.startswith("预热中") and waited < wait_ready_s:
+            if verbose:
+                log(f"  · 服务端{err}；{step:.0f}s 后重试"
+                    f"（已等 {waited:.0f}s / 上限 {wait_ready_s:.0f}s）")
+            time.sleep(step)
+            waited += step
+            payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, t)
+        if waited and err and verbose:
+            log(f"  · 预热等待已达上限 {wait_ready_s:.0f}s，放弃等待")
+
         last_payload, last_err = payload, err
         if err or not isinstance(payload, dict):
             if verbose:
