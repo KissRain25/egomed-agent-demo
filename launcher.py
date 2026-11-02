@@ -487,8 +487,12 @@ def cmd_warmup(args) -> int:
         sid = mc.make_session_id("warmup")
         log("[--]", f"发送样例语音预热 ASR（首次最长等 {timeout:.0f}s，这一步就是全部意义）…")
         t0 = time.time()
+        # wait_ready_s 跟 timeout 对齐：服务端在 ASR 未热好时会回 503 asr_warming，
+        # 客户端按 10s 重试；给 120s 默认值会在 ASR 初始化较慢时提前放弃，
+        # 而 first_timeout 又帮不上忙（请求根本没发出去，是被立刻 503 挡回来的）。
         target, used_wav, _payload, terr = mc.set_target(
-            url, sid, None, 15.0, verbose=True, first_timeout=timeout)
+            url, sid, None, 15.0, verbose=True,
+            first_timeout=timeout, wait_ready_s=timeout)
         spent = time.time() - t0
         if target:
             log("[OK]", f"ASR 通道已预热：{target!r}（用 {used_wav}，耗时 {spent:.1f}s）")
