@@ -72,12 +72,22 @@ from PIL import Image, ImageTk  # noqa: E402
 
 PROJECT_ROOT = mc.PROJECT_ROOT
 sys.path.insert(0, str(PROJECT_ROOT))          # 为了 import 根目录的 launcher（版本常量）
+import egomed_config as ec  # noqa: E402      # 配置唯一读写实现（增量 3）
 AUDIO_DIR = PROJECT_ROOT / "data" / "samples" / "audio"
 OUT_ROOT = PROJECT_ROOT / "runs" / "console"
 PREVIEW_MAX = (560, 420)      # 画面预览最大尺寸
 UI_TICK_MS = 200              # 界面刷新间隔
 LOG_MAX_LINES = 500           # 运行日志面板最多保留的行数
 LOG_DRAIN_MAX = 200           # 单次刷新最多处理的行数（防回归刷屏把界面拖住）
+
+
+def _num_str(value, fallback: str = "2") -> str:
+    """把配置里的 2.0 / 2 / "2" 统一成界面上好看的 "2" 或 "2.5"。"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return str(int(f)) if f == int(f) else str(f)
 
 
 def _load_versions() -> tuple[str, str]:
@@ -308,6 +318,7 @@ class Console:
         self.root = root
         self.session_id = mc.make_session_id(doctor)
         self.out_root = OUT_ROOT / datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.cfg, self.cfg_notes = self._read_cfg()   # 增量 3：配置即界面初值
         self.runner: lc.LiveRunner | None = None
         self.run_thread: threading.Thread | None = None
         self.recorder: Recorder | None = None
@@ -342,25 +353,26 @@ class Console:
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        # ① 启动引导
+        # ① 启动引导（初值来自 config.toml 的 [ui] 段 —— 增量 3）
+        ui = self.cfg.get("ui", {}) if isinstance(self.cfg, dict) else {}
         ttk.Label(left, text="① 启动引导", font=("Microsoft YaHei", 11, "bold")).pack(anchor="w")
-        self.var_source = tk.StringVar(value="video")
+        self.var_source = tk.StringVar(value=str(ui.get("source") or "video"))
         for text, val in (("视频/帧目录（自动化）", "video"), ("本机摄像头", "cam"),
                           ("网络流 URL（手机当镜头）", "url")):
             ttk.Radiobutton(left, text=text, value=val, variable=self.var_source).pack(anchor="w")
         ttk.Label(left, text="路径 / URL").pack(anchor="w", pady=(6, 0))
-        self.var_input = tk.StringVar(value="data/samples/acdc")
+        self.var_input = tk.StringVar(value=str(ui.get("input") or "data/samples/acdc"))
         ttk.Entry(left, textvariable=self.var_input, width=34).pack(anchor="w")
         row = ttk.Frame(left)
         row.pack(anchor="w", pady=(6, 0))
         ttk.Label(row, text="提交 fps").pack(side="left")
-        self.var_fps = tk.StringVar(value="2")
+        self.var_fps = tk.StringVar(value=_num_str(ui.get("submit_fps")))
         ttk.Entry(row, textvariable=self.var_fps, width=5).pack(side="left", padx=4)
         ttk.Label(row, text="显示").pack(side="left")
-        self.var_display = tk.StringVar(value="result")
+        self.var_display = tk.StringVar(value=str(ui.get("display") or "result"))
         ttk.Combobox(row, textvariable=self.var_display, width=8, state="readonly",
                      values=["result", "blend"]).pack(side="left", padx=4)
-        self.var_mic = tk.BooleanVar(value=False)
+        self.var_mic = tk.BooleanVar(value=bool(ui.get("mic", False)))
         ttk.Checkbutton(left, text="开启麦克风（说话切换目标）", variable=self.var_mic).pack(
             anchor="w", pady=(4, 0))
         ttk.Button(left, text="机位校准（引导式，8 帧）",
@@ -432,10 +444,14 @@ class Console:
         menubar = tk.Menu(self.root)
 
         m_file = tk.Menu(menubar, tearoff=0)
+        m_file.add_command(label="设置…（服务端 / 压缩 / 回显 / 日志）", command=self.on_settings)
+        m_file.add_command(label="打开配置文件（config.toml）", command=self.on_open_config)
+        m_file.add_command(label="重新载入配置", command=self.on_reload_config)
+        m_file.add_separator()
         m_file.add_command(label="打开输出目录", command=self.on_open_dir)
         m_file.add_command(label="导出诊断包（含版本与配置）", command=self.on_diag_pack)
         m_file.add_separator()
-        m_file.add_command(label="退出", command=self._on_close)
+        m_file.add_command(label="退出（自动记住当前选择）", command=self._on_close)
         menubar.add_cascade(label="文件", menu=m_file)
 
         m_run = tk.Menu(menubar, tearoff=0)
@@ -469,6 +485,124 @@ class Console:
         menubar.add_cascade(label="帮助", menu=m_help)
 
         self.root.config(menu=menubar)
+
+    # ------------------------------------------------------------ 配置（增量 3）
+    def _read_cfg(self) -> tuple[dict, list[str]]:
+        """读四层里"默认 + 文件 + 环境变量"三层；读不到也不许崩。"""
+        try:
+            return ec.load(PROJECT_ROOT)
+        except Exception as exc:  # noqa: BLE001
+            return ec.default_config(), [f"配置读取失败（{exc}），已用内置默认值"]
+
+    def _ui_values(self) -> dict:
+        try:
+            fps = float(self.var_fps.get().strip() or "2")
+        except ValueError:
+            fps = 2.0
+        return {
+            "source": self.var_source.get(),
+            "input": self.var_input.get().strip(),
+            "submit_fps": fps,
+            "display": self.var_display.get(),
+            "mic": bool(self.var_mic.get()),
+        }
+
+    def _save_ui(self, quiet: bool = False) -> None:
+        """把上次的界面选择写回 `[ui]`（只动这一段，不碰 server/capture）。"""
+        try:
+            path = ec.save_ui(PROJECT_ROOT, self._ui_values())
+            if not quiet:
+                self._log_line(f"[OK] 界面设置已保存：{path}")
+        except Exception as exc:  # noqa: BLE001
+            self._log_line(f"[!!] 保存界面设置失败：{exc}")
+
+    def on_reload_config(self) -> None:
+        self.cfg, notes = self._read_cfg()
+        ui = self.cfg.get("ui", {})
+        self.var_source.set(str(ui.get("source") or "video"))
+        self.var_input.set(str(ui.get("input") or "data/samples/acdc"))
+        self.var_fps.set(_num_str(ui.get("submit_fps")))
+        self.var_display.set(str(ui.get("display") or "result"))
+        self.var_mic.set(bool(ui.get("mic", False)))
+        for n in notes:
+            self._log_line(f"[--] {n}")
+        self.var_msg.set("配置已重新载入")
+
+    def on_open_config(self) -> None:
+        path = ec.config_path(PROJECT_ROOT)
+        if not path.is_file():
+            self._save_ui(quiet=True)      # 没有就先落一份，别让用户对着空目录
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            self._log_line(f"[--] 配置文件路径：{path}")
+
+    def on_settings(self) -> None:
+        """设置窗口：只改"软件级"配置（服务端/压缩/回显/日志），界面选择走 `[ui]`。"""
+        cfg = self.cfg if isinstance(self.cfg, dict) else {}
+        win = tk.Toplevel(self.root)
+        win.title("设置（写入 config.toml）")
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        srv = cfg.get("server", {})
+        cap = cfg.get("capture", {})
+        dsp = cfg.get("display", {})
+        log = cfg.get("logging", {})
+        fields = [
+            ("服务端地址", "server.url", str(srv.get("url", "http://127.0.0.1:8000"))),
+            ("请求超时（秒）", "server.timeout_s", str(srv.get("timeout_s", 3.0))),
+            ("JPEG 质量（1~100）", "capture.jpeg_quality", str(cap.get("jpeg_quality", 80))),
+            ("回显方式", "display.renderer", str(dsp.get("renderer", "window"))),
+            ("日志级别", "logging.level", str(log.get("level", "info"))),
+        ]
+        vars_: dict[str, tk.StringVar] = {}
+        body = ttk.Frame(win, padding=10)
+        body.pack(fill="both", expand=True)
+        for i, (label, key, val) in enumerate(fields):
+            ttk.Label(body, text=label).grid(row=i, column=0, sticky="w", pady=3)
+            v = tk.StringVar(value=val)
+            vars_[key] = v
+            if key == "display.renderer":
+                ttk.Combobox(body, textvariable=v, width=22, state="readonly",
+                             values=["window", "file", "glasses-mono", "null"]
+                             ).grid(row=i, column=1, sticky="w", padx=6)
+            elif key == "logging.level":
+                ttk.Combobox(body, textvariable=v, width=22, state="readonly",
+                             values=["debug", "info", "warn", "error"]
+                             ).grid(row=i, column=1, sticky="w", padx=6)
+            else:
+                ttk.Entry(body, textvariable=v, width=24).grid(row=i, column=1, sticky="w", padx=6)
+        ttk.Label(body, text=f"配置文件：{ec.config_path(PROJECT_ROOT)}",
+                  foreground="#666").grid(row=len(fields), column=0, columnspan=2,
+                                          sticky="w", pady=(8, 0))
+
+        def _apply() -> None:
+            try:
+                sections = {
+                    "server": {"url": vars_["server.url"].get().strip(),
+                               "timeout_s": float(vars_["server.timeout_s"].get())},
+                    "capture": {"jpeg_quality": int(vars_["capture.jpeg_quality"].get())},
+                    "display": {"renderer": vars_["display.renderer"].get()},
+                    "logging": {"level": vars_["logging.level"].get()},
+                }
+            except ValueError as exc:
+                messagebox.showerror("数值不合法", f"{exc}", parent=win)
+                return
+            try:
+                path = ec.save_sections(PROJECT_ROOT, sections)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("保存失败", f"{exc}", parent=win)
+                return
+            self.cfg, _notes = self._read_cfg()
+            self._log_line(f"[OK] 设置已保存：{path}")
+            self.var_msg.set("设置已保存（下次运行生效）")
+            win.destroy()
+
+        bar = ttk.Frame(win, padding=(10, 0, 10, 10))
+        bar.pack(fill="x")
+        ttk.Button(bar, text="保存", command=_apply).pack(side="right")
+        ttk.Button(bar, text="取消", command=win.destroy).pack(side="right", padx=6)
 
     # ------------------------------------------------------------ 动作
     def _build_args(self, overrides: dict) -> argparse.Namespace:
@@ -732,6 +866,8 @@ class Console:
             self._log_line(f"[--] 文档路径：{path}")
 
     def _on_close(self) -> None:
+        # 增量 3：关窗口即记住这次的选择（下次打开自动恢复）
+        self._save_ui(quiet=True)
         # 长任务不跟着界面一起"悄悄消失"：它在后台起了服务端，必须一起收掉
         if self.job.running():
             self.job.stop()
@@ -835,6 +971,10 @@ def main(argv=None) -> int:
             info["menu"] = bool(root["menu"])
             info["log"] = con.log_box.winfo_manager() or "未显示"
             info["lines"] = con.log_lines
+            info["ui"] = (con.var_source.get(), con.var_input.get(), con.var_fps.get(),
+                          con.var_display.get(), con.var_mic.get())
+            info["cfg"] = str(ec.config_path(PROJECT_ROOT))
+            info["notes"] = list(con.cfg_notes)
             root.destroy()
 
         root.after(600, _collect_and_quit)
@@ -842,6 +982,11 @@ def main(argv=None) -> int:
         mc.log(f"[selftest] 界面构建与刷新正常 | 软件 v{APP_VERSION} 契约 {CONTRACT_VERSION} | "
                f"菜单栏 {'有' if info.get('menu') else '无'} | "
                f"日志面板 {info.get('log')} | 日志 {info.get('lines')} 行")
+        mc.log(f"[selftest] 配置 {info.get('cfg')} | 界面初值 source={info['ui'][0]!r} "
+               f"input={info['ui'][1]!r} fps={info['ui'][2]!r} display={info['ui'][3]!r} "
+               f"mic={info['ui'][4]}")
+        for n in info.get("notes", []):
+            mc.log(f"[selftest]   {n}")
         return 0
     if args.selftest_job:
         con.on_run_job(args.selftest_job)

@@ -19,7 +19,8 @@
 |---|---|---|
 | `launcher.py` | `./launcher.py` | 统一启动器 v0.2（9 个子命令，全部已实装） |
 | `egomed.bat` | `./egomed.bat` | 唯一入口壳（解释器兜底 + 透传退出码） |
-| `config.toml` | `./config.toml` | 唯一配置源 |
+| `config.toml` | `./config.toml` | 唯一配置源（含 `[ui]` 段：上次界面选择） |
+| `egomed_config.py` | `./egomed_config.py` | `config.toml` 的**唯一读写实现**（四层优先级 / 坏配置备份 / 带注释回写） |
 | `VERSION` | `./VERSION` | 软件版本号**唯一来源**（`--version` 与 GUI「关于」同源） |
 
 ## 旧 bat 的现状（增量 1 收尾完成）
@@ -46,9 +47,26 @@
 | 运行 → 长稳测试（60 分钟） | `egomed.bat soak --minutes 60` | `client/run_soak.py` |
 | 运行 → 停止长任务 | —（GUI 内） | 先 CTRL_BREAK，5s 不退再 taskkill /T |
 
+## 增量 3（配置持久化）已完成 — 2026-11-02
+
+`config.toml` 由 `egomed_config.py` 统一读写，优先级：**命令行 > 环境变量 > 文件 > 内置默认**。
+
+| 能力 | 入口 |
+|---|---|
+| 记住上次界面选择 | 关窗口自动写 `[ui]`；下次打开自动恢复 |
+| 改软件级配置 | GUI「文件 → 设置…」（服务端/超时/JPEG 质量/回显方式/日志级别） |
+| 看/手改配置 | GUI「文件 → 打开配置文件」 |
+| 丢弃改动重读 | GUI「文件 → 重新载入配置」 |
+| 环境变量覆盖 | `EGOMED_SERVER_URL` / `EGOMED_FPS` / `EGOMED_RENDERER` / `EGOMED_LOG_LEVEL` |
+| 配置写坏 | 自动改名 `config.bak-<时间戳>.toml` + 用默认值启动 + 一行提示，不拦启动 |
+| 命令行查看生效值 | `python egomed_config.py` ／ 自测 `python egomed_config.py --selftest` |
+
 ## 验证方式（不需要服务端）
 
 ```powershell
+# 配置模块自测：11 项（缺文件 / 往返 / 坏配置备份 / 环境变量 / 类型保真）
+D:\ScienceApp\anaconda\envs\egomed\python.exe egomed_config.py --selftest
+
 # 精简自检：10 项 + 退出码（0 通过 / 2 有问题）
 D:\ScienceApp\anaconda\envs\egomed\python.exe launcher.py doctor
 

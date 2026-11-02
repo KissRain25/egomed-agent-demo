@@ -133,32 +133,33 @@ def find_python() -> str | None:
 
 
 def load_config(root: Path) -> tuple[dict, str]:
-    """读 config.toml（四层优先级里只负责"文件"这一层）。
+    """读配置：命令行 > 环境变量(EGOMED_*) > `config.toml` > 内置默认值。
 
-    返回 (配置字典, 说明)。文件缺失/损坏都不抛异常——启动不该被配置卡住。
+    真正的实现在 `egomed_config.py` —— GUI 也要读同一份配置并回写 `[ui]`，
+    两处各写一套解析/合并必然漂移，所以这里只做委托。
+    文件缺失或损坏都不抛异常（坏了会备份成 `.bak-<时间戳>` 再用默认值）。
     """
-    path = root / "config.toml"
-    if not path.exists():
-        path = STAGE_DIR / "config.toml"
-    if not path.exists():
-        return default_config(), "未找到 config.toml，使用内置默认值"
-
     try:
-        import tomllib  # Python 3.11+
-        with path.open("rb") as f:
-            return tomllib.load(f), f"已加载 {path}"
-    except Exception as exc:
-        return default_config(), f"config.toml 无法解析（{exc}），使用内置默认值"
+        import egomed_config
+        cfg, notes = egomed_config.load(root)
+        return cfg, "；".join(notes)
+    except Exception as exc:  # noqa: BLE001
+        return default_config(), f"配置模块不可用（{exc}），使用内置默认值"
 
 
 def default_config() -> dict:
-    return {
-        "server": {"url": "http://127.0.0.1:8000", "timeout_s": 3.0},
-        "capture": {"source": "video", "fps": 5.0, "max_side": 1280,
-                    "jpeg_quality": 80, "max_bytes": 307200},
-        "display": {"renderer": "window"},
-        "logging": {"level": "info", "dir": "runs/logs"},
-    }
+    """兜底默认值：只在 import 不到 egomed_config 时用（正常不该走到）。"""
+    try:
+        import egomed_config
+        return egomed_config.default_config()
+    except Exception:  # noqa: BLE001
+        return {
+            "server": {"url": "http://127.0.0.1:8000", "timeout_s": 3.0},
+            "capture": {"source": "video", "fps": 5.0, "max_side": 1280,
+                        "jpeg_quality": 80, "max_bytes": 307200},
+            "display": {"renderer": "window"},
+            "logging": {"level": "info", "dir": "runs/logs"},
+        }
 
 
 def port_in_use(host: str, port: int) -> bool:
@@ -236,9 +237,10 @@ def cmd_doctor(args) -> int:
     else:
         log("[OK]", f"权重目录齐全（{len(WEIGHT_DIRS)} 项）")
 
-    # 5) 配置
+    # 5) 配置（读不到/坏了会用默认值兜底，属于"提示"而不是"失败"）
     cfg, note = load_config(root)
-    log("[OK]", f"配置：{note}")
+    tag = "[--]" if any(k in note for k in ("失败", "未找到", "忽略", "不可用")) else "[OK]"
+    log(tag, f"配置：{note}")
     url = cfg.get("server", {}).get("url", "http://127.0.0.1:8000")
 
     # 6) 服务端连通性（没起不算失败）
