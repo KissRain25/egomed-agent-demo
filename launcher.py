@@ -377,7 +377,16 @@ def cmd_demo(args) -> int:
     try:
         proc = lsg.start_server()
         if not lsg.wait_warmup(proc):
-            log("[!!]", "E1002 服务端未能就绪（启动失败或预热超时），请查看 runs/launch/")
+            # 增量 4：区分"没人听(E1002)"与"有人在听但没就绪(E3003)"，两者的处置完全不同
+            try:
+                import egomed_errors
+                host_port = url.split("//")[-1].split("/")[0]
+                host, _, port = host_port.partition(":")
+                code = egomed_errors.pick_server_code(host, int(port or 8000), healthy=False)
+                log("[!!]", egomed_errors.explain(code, "服务端未能就绪（启动失败或预热超时）"))
+            except Exception:  # noqa: BLE001
+                log("[!!]", "E1002 服务端未能就绪（启动失败或预热超时）")
+            log("     ", "服务端日志：runs/launch/")
             return RC_CONN
         log("[OK]", "服务端已就绪，打开现场控制台（关闭窗口即结束并关闭服务端）")
         return subprocess.call([sys.executable, str(console)], cwd=str(root))

@@ -73,6 +73,7 @@ from PIL import Image, ImageTk  # noqa: E402
 PROJECT_ROOT = mc.PROJECT_ROOT
 sys.path.insert(0, str(PROJECT_ROOT))          # 为了 import 根目录的 launcher（版本常量）
 import egomed_config as ec  # noqa: E402      # 配置唯一读写实现（增量 3）
+import egomed_errors as ee  # noqa: E402      # 错误码：码 + 一句人话 + 一条下一步（增量 4）
 AUDIO_DIR = PROJECT_ROOT / "data" / "samples" / "audio"
 OUT_ROOT = PROJECT_ROOT / "runs" / "console"
 PREVIEW_MAX = (560, 420)      # 画面预览最大尺寸
@@ -479,9 +480,12 @@ class Console:
         menubar.add_cascade(label="工具", menu=m_tool)
 
         m_help = tk.Menu(menubar, tearoff=0)
-        m_help.add_command(label="关于", command=self.on_about)
+        m_help.add_command(label="错误码速查（E1xxx / E3xxx）",
+                           command=lambda: self.on_open_doc("软件制作/错误码.md"))
         m_help.add_command(label="查看交付流程文档",
                            command=lambda: self.on_open_doc("docs/软件化交付流程.md"))
+        m_help.add_separator()
+        m_help.add_command(label="关于", command=self.on_about)
         menubar.add_cascade(label="帮助", menu=m_help)
 
         self.root.config(menu=menubar)
@@ -621,6 +625,16 @@ class Console:
     def on_start(self) -> None:
         if self.runner is not None:
             return
+        # 增量 4：先按错误码把"能不能开始"说清楚，别让用户点下去才看到异常
+        if self.var_source.get() == "video":
+            src = Path(self.var_input.get().strip() or "data/samples/acdc")
+            if not src.is_absolute():
+                src = PROJECT_ROOT / src
+            if not src.exists():
+                msg = ee.explain("E1001", f"路径不存在：{src}")
+                self._log_line("[!!] " + msg)
+                messagebox.showerror("采集源不可用", msg)
+                return
         try:
             args = self._build_args({"out": str(self.out_root / "run")})
         except SystemExit:      # argparse 报错时会 exit
@@ -632,12 +646,18 @@ class Console:
         self.var_msg.set("运行中…（关闭窗口 = 停止）")
 
         def _run():
+            failed = False
             try:
                 self.runner.run()
             except Exception as exc:  # noqa: BLE001
-                self.var_msg.set(f"运行异常：{exc}")
+                failed = True
+                code = ee.classify(exc)
+                line = ee.explain(code, f"{type(exc).__name__}: {exc}")
+                self._log_line("[!!] " + line)      # 先落日志，再改状态栏
+                self.var_msg.set(f"{code} 运行异常，详见 ⑥ 运行日志")
             finally:
-                self.var_msg.set("已停止")
+                if not failed:      # 别让"已停止"把刚写上去的错误码盖掉
+                    self.var_msg.set("已停止")
 
         self.run_thread = threading.Thread(target=_run, daemon=True)
         self.run_thread.start()
@@ -675,7 +695,9 @@ class Console:
             payload, elapsed, err = mc.post_audio(url, self.session_id,
                                                    wav.read_bytes(), wav_name, 20.0)
             if err:
-                self.var_msg.set(f"设置目标失败：{err}（服务端起了吗？）")
+                # 设置目标走的就是 A2 请求，失败几乎都是"连不上/超时"，按 E1002 播报
+                self._log_line("[!!] " + ee.explain("E1002", f"设置目标失败：{err}"))
+                self.var_msg.set(f"设置目标失败：{err}")
                 return
             text = (payload or {}).get("text")
             target = (payload or {}).get("target")

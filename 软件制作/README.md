@@ -61,9 +61,30 @@
 | 配置写坏 | 自动改名 `config.bak-<时间戳>.toml` + 用默认值启动 + 一行提示，不拦启动 |
 | 命令行查看生效值 | `python egomed_config.py` ／ 自测 `python egomed_config.py --selftest` |
 
+## 增量 4（错误码与诊断）已完成 — 2026-11-02
+
+现场只认三件事：**唯一错误码 + 一句人话 + 一条下一步**。码表见 `软件制作/错误码.md`。
+
+| 码 | 场景 | 下一步 |
+|---|---|---|
+| E1001 | 采集源打不开 | 换 `--index` / 检查路径 |
+| E1002 | 服务端不可达（端口没人听） | `doctor` 看服务端行，再查 8000 占用 |
+| E1003 | 请求超时 | 看服务端是否还在预热 |
+| E1004 | 回显渲染失败 | 改 `display.renderer = "file"` |
+| E3001 | 解释器缺失 | 跑「安装环境.bat」或设 `EGOMED_PY` |
+| E3002 | 依赖缺失 / 脚本找不到 | 按提示 pip 安装 |
+| E3003 | 端口被占用但服务未就绪 | 复用已有实例或结束占用进程 |
+| E3004 | 权重缺失 | 按 doctor 列出的路径补齐 |
+
+诊断包（`egomed.bat diag`）现在含 `versions.json`（软件/契约/Python/git commit/服务端）与
+`config/config.toml` 快照，解压后第一眼就能确认版本对不对。
+
 ## 验证方式（不需要服务端）
 
 ```powershell
+# 错误码演练：三例故障 + 文案完整性（25 项）
+D:\ScienceApp\anaconda\envs\egomed\python.exe egomed_errors.py --drill
+
 # 配置模块自测：11 项（缺文件 / 往返 / 坏配置备份 / 环境变量 / 类型保真）
 D:\ScienceApp\anaconda\envs\egomed\python.exe egomed_config.py --selftest
 

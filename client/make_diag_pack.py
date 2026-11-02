@@ -62,6 +62,43 @@ def sh(cmd: list[str]) -> str:
         return f"(执行失败：{exc})"
 
 
+def version_manifest() -> dict:
+    """增量 4：版本清单 —— 解压诊断包后**第一眼**要能回答"哪个版本、什么契约、哪个解释器"。"""
+    root = PROJECT_ROOT
+    ver, contract, py_resolved = "unknown", "unknown", ""
+    try:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        import launcher
+        ver = getattr(launcher, "VERSION", ver)
+        contract = getattr(launcher, "CONTRACT_VERSION", contract)
+        py_resolved = getattr(launcher, "find_python", lambda: "")() or ""
+    except Exception:  # noqa: BLE001
+        pass
+    cfg, cfg_notes = {}, []
+    try:
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        import egomed_config
+        cfg, cfg_notes = egomed_config.load(root)
+    except Exception as exc:  # noqa: BLE001
+        cfg_notes = [f"配置读取失败：{exc}"]
+    return {
+        "software_version": ver,
+        "contract_version": contract,
+        "python_running": sys.version.split()[0],
+        "python_running_path": sys.executable,
+        "python_resolved": py_resolved,
+        "project_root": str(root),
+        "config_path": str(root / "config.toml"),
+        "config_notes": cfg_notes,
+        "git_commit": sh(["git", "rev-parse", "--short", "HEAD"]),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "server_url": (cfg.get("server") or {}).get("url", ""),
+        "error_codes_doc": "软件制作/错误码.md",
+    }
+
+
 def collect_env() -> str:
     lines = [
         f"时间        : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -161,12 +198,16 @@ def main(argv=None) -> int:
     mc.log(f"N28 诊断包　→ {stage}")
     mc.log("=" * 74)
 
-    # ① 环境
+    # ① 环境 + 版本清单（增量 4）
     (stage / "env.txt").write_text(collect_env(), encoding="utf-8")
-    mc.log("  [1/6] 环境信息 env.txt")
+    man = version_manifest()
+    (stage / "versions.json").write_text(
+        json.dumps(man, ensure_ascii=False, indent=2), encoding="utf-8")
+    mc.log(f"  [1/6] 环境信息 env.txt + 版本清单 versions.json"
+           f"（v{man['software_version']} / 契约 {man['contract_version']}）")
 
-    # ② 配置快照
-    for cfg in (PROJECT_ROOT / "configs" / "live.yaml",):
+    # ② 配置快照（软件级 config.toml + 客户端 live.yaml 都要收）
+    for cfg in (PROJECT_ROOT / "config.toml", PROJECT_ROOT / "configs" / "live.yaml"):
         if copy_file(cfg, stage / "config" / cfg.name, notes):
             mc.log(f"  [2/6] 配置快照 {cfg.name}")
 
@@ -225,9 +266,19 @@ def main(argv=None) -> int:
         "# EgoMed-Agent 诊断包", "",
         f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}　"
         f"范围：最近 {args.days or '全部'} 天　工具：`client/make_diag_pack.py`", "",
+        "## 版本（先核对这一块）", "", "```",
+        f"软件版本   : v{man['software_version']}",
+        f"契约版本   : {man['contract_version']}",
+        f"Python     : {man['python_running']}  ({man['python_running_path']})",
+        f"解释器解析 : {man['python_resolved'] or '(未解析)'}",
+        f"git commit : {man['git_commit']}",
+        f"服务端     : {man['server_url'] or '(未知)'}",
+        "```", "",
         "## 这个包里有什么", "",
         "| 文件 | 内容 |", "|------|------|",
+        "| `versions.json` | **版本清单**（软件/契约/Python/git/服务端地址/配置 notes） |",
         "| `env.txt` | 解释器 / Python / 关键包 / GPU / git commit / OS |",
+        "| `config/config.toml` | 软件级配置快照（含 `[ui]` 上次界面选择） |",
         "| `config/live.yaml` | 现场客户端配置快照 |",
         "| `server_log_tail.txt` | 服务端日志末尾（含 A1/A2 每请求一行） |",
         "| `reports/` | 验收(validation) / 长稳(stability) / 混合负载(concurrency) / 控制台 / 客户端运行 |",
@@ -239,10 +290,11 @@ def main(argv=None) -> int:
         summary += ["## 打包时跳过的内容", "", *[f"- {n}" for n in notes], ""]
     summary += [
         "## 怎么用", "",
-        "1. 先看 `env.txt` 确认版本与设备一致；",
-        "2. 看 `server_log_tail.txt` 找 `status=error` / 500 / 超时；",
-        "3. 看 `reports/` 里相应报告的结论行与指标表；",
-        "4. 画面/渲染问题直接看 `frames/` 里的图。", "",
+        "1. 先看 `versions.json` / 本节版本块，确认软件与契约版本、解释器路径都对得上；",
+        "2. 出现 `E1xxx / E3xxx` 时对照仓库 `软件制作/错误码.md`（每码都有「一句人话 + 一条下一步」）；",
+        "3. 看 `server_log_tail.txt` 找 `status=error` / 500 / 超时；",
+        "4. 看 `reports/` 里相应报告的结论行与指标表；",
+        "5. 画面/渲染问题直接看 `frames/` 里的图。", "",
     ]
     (stage / "summary.md").write_text("\n".join(summary), encoding="utf-8")
     mc.log("  [6/6] 摘要 summary.md")
