@@ -6,8 +6,8 @@
 根目录 `egomed.bat` 只做解释器兜底 + chcp + 退出码透传，全部子命令在本文件实现。
 旧 bat（启动模拟眼镜 / 现场控制台 / 环境自检）已降级为**转发壳**，行为不变。
 
-已实装：doctor / console / demo / sim / check / calibrate / diag
-占位：regress / soak（增量 2 接入）
+已实装：doctor / console / demo / sim / check / calibrate / diag / regress / soak
+版本号唯一来源：根目录 `VERSION` 文件（本文件的 VERSION 常量由它读出，缺文件才回退）
 计划见 `软件制作/计划_软件化实施.md`。
 
 用法
@@ -21,8 +21,8 @@
     python launcher.py diag            # 生成诊断包
     python launcher.py sim             # 兼容旧「启动模拟眼镜」：服务端 + 命令行客户端
     python launcher.py check           # 兼容旧「环境自检」：scripts/check_env.py 详细检查
-    python launcher.py regress         # 一键回归（占位）
-    python launcher.py soak -m 60      # 长稳测试（占位）
+    python launcher.py regress         # 一键回归（→ client/run_regression.py）
+    python launcher.py soak -m 60      # 长稳测试（→ client/run_soak.py）
 
 返回码
 ------
@@ -43,8 +43,29 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-VERSION = "0.2.0"
+FALLBACK_VERSION = "0.2.0"      # VERSION 文件缺失时的兜底，正常不该走到
 CONTRACT_VERSION = "v1.0.3"
+
+
+def read_version() -> str:
+    """软件版本的**唯一来源**是根目录 `VERSION` 文件。
+
+    为什么不用常量硬编码：GUI「关于」、`--version`、诊断包清单三处都要显示版本，
+    硬编码必然漂移。读文件失败就回退，绝不因版本号读不到而启动失败。
+    """
+    here = Path(__file__).resolve().parent      # 不用 STAGE_DIR：它在下面才定义
+    for cand in (here / "VERSION", here.parent / "VERSION"):
+        try:
+            if cand.is_file():
+                first = cand.read_text(encoding="utf-8").strip().splitlines()
+                if first and first[0].strip():
+                    return first[0].strip()
+        except Exception:  # noqa: BLE001
+            continue
+    return FALLBACK_VERSION
+
+
+VERSION = read_version()
 
 RC_OK = 0
 RC_CANCELLED = 1
@@ -297,12 +318,6 @@ def cmd_check(args) -> int:
     return forward_script("scripts/check_env.py", args)
 
 
-def cmd_not_implemented(name: str) -> int:
-    log("[--]", f"子命令 `{name}` 尚未实现（骨架阶段）")
-    log("     ", "计划见：软件制作/计划_软件化实施.md 的增量 2~4")
-    return RC_NOTIMPL
-
-
 def load_launch_helper(root: Path):
     """复用 client/launch_sim_glasses.py 的启停与预热等待，不重复实现。
 
@@ -373,13 +388,17 @@ def cmd_demo(args) -> int:
 
 
 def cmd_regress(args) -> int:
-    """一键回归：接 acceptance_test / run_regression。增量 2 实装。"""
-    return cmd_not_implemented("regress")
+    """一键回归（N22）：转发 `client/run_regression.py`，由它自己起/关服务端。
+
+    返回码沿用该脚本的既有语义（0 通过 / 非 0 未通过），**不重映射** ——
+    旧「回归.bat」也在看这个码，改了会破坏现场习惯。
+    """
+    return forward_script("client/run_regression.py", args)
 
 
 def cmd_soak(args) -> int:
-    """长稳测试：接 run_soak。增量 2 实装。"""
-    return cmd_not_implemented("soak")
+    """长稳测试（N24）：转发 `client/run_soak.py`（`--minutes` 缺省 60）。"""
+    return forward_script("client/run_soak.py", args)
 
 
 # ---------------------------------------------------------------- 入口
@@ -404,8 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("check", cmd_check, "兼容壳：详细环境检查（旧「环境自检」）", True),
         ("calibrate", cmd_calibrate, "机位校准", False),
         ("diag", cmd_diag, "生成诊断包", False),
-        ("regress", cmd_regress, "一键回归", False),
-        ("soak", cmd_soak, "长稳测试", False),
+        ("regress", cmd_regress, "一键回归（mock + real 两套验收）", True),
+        ("soak", cmd_soak, "长稳测试（默认 60 分钟）", True),
     ):
         sp = sub.add_parser(name, help=help_text, add_help=not passthru_all)
         sp.add_argument("rest", nargs=argparse.REMAINDER, help="透传给下游脚本的参数")
@@ -414,13 +433,29 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _split_subcommand(raw: list[str]) -> tuple[str | None, list[str]]:
+    """切出 (子命令, 子命令之后的**原始**参数)，保持原顺序不动。
+
+    为什么不用 argparse 的 `nargs=REMAINDER` 取透传参数：子解析器不认识 `--suite`
+    这类下游选项时，argparse 会把它丢进 unknown，同时把 `mock` 吃进 REMAINDER，
+    两者拼回去顺序就变成 `mock --suite`，下游直接报 "--suite: expected one argument"。
+    （2026-11-02 实测踩到；本文件只接受 -v/--version 两个前置选项，故此处可安全切分）
+    """
+    for i, tok in enumerate(raw):
+        if tok.startswith("-"):
+            continue
+        return tok, raw[i + 1:]
+    return None, []
+
+
 def main(argv=None) -> int:
     setup_stdout()
+    raw = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    # 用 parse_known_args：子命令后的额外参数（含 --xxx）统一收进 rest 透传给下游脚本。
-    # 不用 nargs=REMAINDER —— 在子解析器里遇到 "-" 开头的参数仍会被判为 unrecognized。
-    args, extras = parser.parse_known_args(argv)
-    args.rest = list(getattr(args, "rest", []) or []) + list(extras)
+    # 用 parse_known_args 只为拿到 args.cmd / args.func；透传参数一律取原始 argv 尾部
+    args, _extras = parser.parse_known_args(raw)
+    sub, tail = _split_subcommand(raw)
+    args.rest = tail if sub else []
 
     if not getattr(args, "func", None):
         # 无子命令 = 打开 GUI（最常用路径）

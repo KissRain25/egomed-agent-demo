@@ -1,6 +1,6 @@
 # EgoMed-Agent 项目进度记录
 
-> 最后更新：2026-09-19
+> 最后更新：2026-11-02（只增补 #15 软件化交付；中间 N21~N52 的明细见 `docs/工作日志.md` 与 `docs/总计划.md`）
 > 本文档记录项目从 0 到当前的全部进度，供团队成员随时查阅。
 
 ---
@@ -51,6 +51,7 @@
 | 12 | **ASR 谐音问题解决** | 中文医学词汇同音错字（"心肌"→"心机"、"息肉"→"西肉"等）实测 1/8 → 8/8：新增 `scripts/demo/asr_medical.py`（medium + zh + 领域 prompt + hotwords + beam5 + VAD），接口与 `asr_engine` 一致，稳态 400~500ms/句；方案见 `API_CONTRACT.md` A.11 | 2026-09-16 |
 | 13 | **接口联调闭环（T5/T6/T7）** | 李完成 A.10 P0×4 返工（丢帧语义/预热/坏帧分支/字段对齐）+ A.11 接入；闫新增一键验收脚本 `client/acceptance_test.py` 复验：mock 8/8、真引擎首帧 66s→42ms、并发 8.75s→238ms、语音 7/8；遗留 cmd_02 幻觉 known issue（A.11 归闫） | 2026-09-18 |
 | 14 | **接口方案冻结（T8，v1.0）** | `API_CONTRACT.md` 基于 v0.2.4 冻结为 v1.0：接口范围/字段/类型/路径/错误码全部锁死，冻结版存档 `docs/API_CONTRACT_v1.0_frozen.md`，群通知李。接口阶段（T1~T8）收官，此后变更走 v1.x 流程 | 2026-09-19 |
+| 15 | **软件化交付 N53 增量 1~2** | 桌面单一入口：根目录 `VERSION`（版本唯一来源）+ `launcher.py` v0.2.0 + `egomed.bat`，11 个 bat 的解释器解析收敛到 1 处；`client/live_console.py` 加菜单栏「文件/运行/工具/帮助」与 ⑥ 运行日志面板，长任务（doctor/check/regress/soak）走 `launcher` 子命令、队列 + `after()` 轮询实时出日志、CTRL_BREAK 可中途停止并清进程树；`regress`/`soak` 子命令转正。增量 3（配置持久化）/ 增量 4（错误码与诊断包）待做 | 2026-11-02 |
 | 15 | **ASR 幻觉防护（A.11 遗留收尾）** | `asr_medical.py` 三层防护（解码侧抑制 `condition_on_previous_text=False`+repetition_penalty / 输出侧 n-gram 复读检测 / 逐段时间兜底）+ 降级重试 + 返空串兜底，`transcribe` 签名不变、服务端零改动；cmd_02 8.8s→**1.2s** 且文本正确、连跑 10 次全对，模块自测 **25/25**、端到端 real 套件 **10/10**（语音 8/8，此前 7/8）；新增自测 CLI `--only/--stress`。方案见契约 A.11.1 | 2026-09-19 |
 
 | 16 | **实时采集客户端 + 麦克风交互（N4 客户端侧）** | `client/live_client.py`：FrameSource 抽象（video/cam/眼镜占位）、抽帧发送（后台线程并发=1覆盖）、回显+防抖（空 overlay 沿用上帧）、HUD 中文、自动验收报告；麦克风能量 VAD 切句→A2 切目标（`--mic`，含设备自测与离线 VAD 回放自测）；端到端实测出真实分割回显（真引擎 + 新样例集），剩余瓶颈为服务端窗口延迟（N13）。另交付 `client/pick_detectable_frames.py`（样例集整改工具，息肉样例 0/12→12/12） | 2026-09-20 |

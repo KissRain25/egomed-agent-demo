@@ -9,14 +9,25 @@
 
 界面
 ----
+菜单栏：文件 / 运行 / 工具 / 帮助（N53 增量 2）
 ┌──────────────┬───────────────────────────────┐
 │ ① 启动引导    │  ③ 实时画面（服务器 overlay）   │
 │   源/路径/fps │                               │
 │ ② 分割目标    ├───────────────────────────────┤
 │   预设按钮     │  ④ 实时指标（fps/P50/P95/错误） │
+│              ├───────────────────────────────┤
+│              │  ⑥ 运行日志（长任务实时输出）    │
 ├──────────────┴───────────────────────────────┤
 │ [开始] [停止] [录制] [机位预检] [打开输出目录]  │
 └──────────────────────────────────────────────┘
+
+⑥ 运行日志（N53 增量 2）
+------------------------
+环境自检 / 详细检查 / 一键回归 / 长稳测试都在**子进程**里跑，输出逐行进面板：
+- 子进程用 `subprocess.Popen` 起，工作线程只负责把 stdout 塞进 `queue.Queue`；
+- 界面用已有的 200ms `after()` 循环取队列 → **工作线程绝不碰控件**（碰了必卡）；
+- 面板限 500 行滚动，超出删头部；「停止长任务」先 CTRL_BREAK 让子进程走它自己的
+  清理逻辑（关服务端），5 秒不退再 taskkill 整棵进程树。
 
 实现要点（不重复造轮子）
 ------------------------
@@ -30,7 +41,8 @@
 ----
     现场控制台.bat                     # 双击（推荐）
     python client/live_console.py     # 同效
-    python client/live_console.py --selftest   # 只构建界面自检（CI/无人值守用）
+    python client/live_console.py --selftest              # 只构建界面自检（CI/无人值守用）
+    python client/live_console.py --selftest-job doctor   # 自检 ⑥ 日志面板（跑完打印统计）
 
 归属：闫（客户端 / 测试工具）｜ 关联：docs/总计划.md 阶段四 N26
 """
@@ -40,6 +52,8 @@ import argparse
 import csv
 import json
 import os
+import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -57,10 +71,58 @@ import live_client as lc  # noqa: E402
 from PIL import Image, ImageTk  # noqa: E402
 
 PROJECT_ROOT = mc.PROJECT_ROOT
+sys.path.insert(0, str(PROJECT_ROOT))          # 为了 import 根目录的 launcher（版本常量）
 AUDIO_DIR = PROJECT_ROOT / "data" / "samples" / "audio"
 OUT_ROOT = PROJECT_ROOT / "runs" / "console"
 PREVIEW_MAX = (560, 420)      # 画面预览最大尺寸
 UI_TICK_MS = 200              # 界面刷新间隔
+LOG_MAX_LINES = 500           # 运行日志面板最多保留的行数
+LOG_DRAIN_MAX = 200           # 单次刷新最多处理的行数（防回归刷屏把界面拖住）
+
+
+def _load_versions() -> tuple[str, str]:
+    """软件版本 / 契约版本。
+
+    软件版本的唯一来源是根目录 `VERSION`（与 `launcher.py --version` 一致）；
+    契约版本取 `launcher.CONTRACT_VERSION`。任何一步失败都给兜底值，不为版本号崩界面。
+    """
+    ver, contract = "0.2.0", "v1.0.3"
+    try:                                        # 首选：和启动器保持同源
+        import launcher as _launcher
+        ver = getattr(_launcher, "VERSION", ver)
+        contract = getattr(_launcher, "CONTRACT_VERSION", contract)
+        return ver, contract
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        txt = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip().splitlines()
+        if txt and txt[0].strip():
+            ver = txt[0].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ver, contract
+
+
+APP_VERSION, CONTRACT_VERSION = _load_versions()
+
+# 长任务：GUI 只负责"起子进程 + 收输出"，业务逻辑全在既有脚本里（不重写）
+JOB_SPECS = {
+    "doctor": ("环境自检", ["doctor"]),
+    "check": ("详细环境检查", ["check"]),
+    "regress-mock": ("一键回归（mock 套件，秒级）", ["regress", "--suite", "mock"]),
+    "regress-all": ("一键回归（完整，含真引擎）", ["regress"]),
+    "soak": ("长稳测试（60 分钟）", ["soak", "--minutes", "60"]),
+}
+
+# 返回码 → 人话（与 launcher.py 的约定一致）
+RC_LABEL = {
+    0: "成功",
+    1: "用户取消",
+    2: "环境问题（E3xxx）",
+    3: "连接问题（E1xxx）",
+    4: "验收失败",
+    5: "功能未实现",
+}
 
 # 预设目标：按钮名 / 样例 wav / 服务端预期识别文本
 TARGET_PRESETS = [
@@ -130,6 +192,116 @@ class Recorder:
         return out
 
 
+# ---------------------------------------------------------------- 长任务
+class JobRunner:
+    """把一条命令当长任务跑：stdout 灌队列，界面自己来取（线程不碰控件）。
+
+    为什么不用 `subprocess.run(capture_output=True)`：那样要等进程结束才拿到输出，
+    回归跑 5~8 分钟期间界面一片空白，看起来就像卡死了。逐行读到就逐行显示才对。
+    """
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.thread: threading.Thread | None = None
+        self.queue: queue.Queue = queue.Queue()
+        self.label = ""
+        self.kind = ""
+        self.started_at = 0.0
+        self.rc: int | None = None
+        self.stop_requested = False
+
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def elapsed(self) -> float:
+        return time.time() - self.started_at if self.started_at else 0.0
+
+    def start(self, cmd: list, label: str, kind: str, cwd: Path | None = None) -> bool:
+        if self.running():
+            return False
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"      # 子进程输出统一 UTF-8，避免 GBK 乱码
+        env["PYTHONUNBUFFERED"] = "1"          # 不缓冲，否则日志会憋到结束才出现
+        # 独立进程组：停止时能发 CTRL_BREAK，让子进程走它自己的 KeyboardInterrupt 清理
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+        self.queue = queue.Queue()
+        self.label, self.kind = label, kind
+        self.rc = None
+        self.stop_requested = False
+        self.started_at = time.time()
+        try:
+            self.proc = subprocess.Popen(
+                [str(c) for c in cmd], cwd=str(cwd) if cwd else None,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                bufsize=1, env=env, creationflags=flags)
+        except Exception as exc:  # noqa: BLE001
+            self.proc = None
+            self.queue.put(f"[!!] 子进程启动失败：{type(exc).__name__}: {exc}")
+            self.queue.put(("exit", -1))
+            return False
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
+        return True
+
+    def _pump(self) -> None:
+        """工作线程：只做"读一行、塞队列"，不碰任何控件。"""
+        p = self.proc
+        if p is None or p.stdout is None:
+            self.queue.put(("exit", -1))
+            return
+        try:
+            for line in p.stdout:
+                self.queue.put(line.rstrip("\r\n"))
+        except Exception as exc:  # noqa: BLE001
+            self.queue.put(f"[!!] 读取输出失败：{type(exc).__name__}: {exc}")
+        finally:
+            try:
+                rc = p.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                rc = -1
+            self.rc = rc                                  # 先落 rc，再投哨兵（顺序别反）
+            self.queue.put(("exit", rc))
+
+    def stop(self, wait_s: float = 5.0) -> None:
+        """先礼后兵：CTRL_BREAK 让子进程自己收尾（关服务端），超时才杀进程树。"""
+        p = self.proc
+        if p is None or p.poll() is not None:
+            return
+        self.stop_requested = True
+        try:
+            if os.name == "nt":
+                os.kill(p.pid, signal.CTRL_BREAK_EVENT)   # type: ignore[attr-defined]
+            else:
+                p.terminate()
+            p.wait(timeout=wait_s)
+        except Exception:  # noqa: BLE001
+            self._kill_tree()
+
+    def _kill_tree(self) -> None:
+        p = self.proc
+        if p is None:
+            return
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                               capture_output=True)
+            else:
+                p.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def drain(self) -> list:
+        """取出已就绪的输出（str 行 / ("exit", rc) 哨兵）。"""
+        items = []
+        while len(items) < LOG_DRAIN_MAX:
+            try:
+                items.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+        return items
+
+
 # ---------------------------------------------------------------- 控制台
 class Console:
     def __init__(self, root: tk.Tk, doctor: str = "console") -> None:
@@ -150,11 +322,16 @@ class Console:
         self._ticks_runner = 0   # runner 非空的刷新次数
         self._ticks_running = 0  # runner 非空且 overlay 已超过 0 的次数
         self._fps_last_t = 0.0   # 上次算速率的时刻（≥1s 窗口）
+        self.job = JobRunner()   # 长任务（doctor/check/regress/soak）子进程
+        self.log_lines = 0       # 日志面板当前行数（用于限 500 行）
 
-        root.title("EgoMed-Agent 现场控制台（N26）")
+        root.title(f"EgoMed-Agent 现场控制台（N26）  v{APP_VERSION}")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
+        self._build_menu()
         self.root.after(UI_TICK_MS, self._tick)   # 启动界面刷新循环（自刷新）
+        self._log_line(f"[--] 控制台已启动  v{APP_VERSION}（契约 {CONTRACT_VERSION}）"
+                       f"  项目根 {PROJECT_ROOT}")
 
     # ------------------------------------------------------------ 界面
     def _build(self) -> None:
@@ -221,6 +398,19 @@ class Console:
         ttk.Label(right, textvariable=self.var_msg, foreground="#0a5").grid(
             row=2, column=0, sticky="w")
 
+        # ⑥ 运行日志（长任务实时输出；工具菜单可折叠）
+        self.log_box = ttk.Labelframe(right, text="⑥ 运行日志", padding=3)
+        self.log_box.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
+        self.log_text = tk.Text(self.log_box, height=8, wrap="none", state="disabled",
+                                font=("Consolas", 9), background="#101010",
+                                foreground="#d0d0d0", insertbackground="#d0d0d0")
+        sb = ttk.Scrollbar(self.log_box, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=sb.set)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        self.log_box.columnconfigure(0, weight=1)
+        self.log_box.rowconfigure(0, weight=1)
+
         # 底部按钮
         bar = ttk.Frame(self.root, padding=(8, 4))
         bar.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -235,6 +425,50 @@ class Console:
         ttk.Button(bar, text="打开输出目录", command=self.on_open_dir).pack(side="left", padx=4)
         ttk.Button(bar, text="导出诊断包", command=self.on_diag_pack).pack(side="left", padx=4)
         ttk.Label(bar, text=f"会话 {self.session_id}").pack(side="right")
+
+    # ------------------------------------------------------------ 菜单
+    def _build_menu(self) -> None:
+        """菜单栏：把原来"要记命令行"的操作收进来，和旧 bat 一一对应。"""
+        menubar = tk.Menu(self.root)
+
+        m_file = tk.Menu(menubar, tearoff=0)
+        m_file.add_command(label="打开输出目录", command=self.on_open_dir)
+        m_file.add_command(label="导出诊断包（含版本与配置）", command=self.on_diag_pack)
+        m_file.add_separator()
+        m_file.add_command(label="退出", command=self._on_close)
+        menubar.add_cascade(label="文件", menu=m_file)
+
+        m_run = tk.Menu(menubar, tearoff=0)
+        m_run.add_command(label="开始运行", command=self.on_start)
+        m_run.add_command(label="停止运行", command=self.on_stop)
+        m_run.add_command(label="录制开关", command=self.on_toggle_record)
+        m_run.add_separator()
+        for kind in ("regress-mock", "regress-all", "soak"):
+            m_run.add_command(label=JOB_SPECS[kind][0],
+                              command=lambda k=kind: self.on_run_job(k))
+        m_run.add_separator()
+        m_run.add_command(label="停止长任务", command=self.on_stop_job)
+        menubar.add_cascade(label="运行", menu=m_run)
+
+        m_tool = tk.Menu(menubar, tearoff=0)
+        for kind in ("doctor", "check"):
+            m_tool.add_command(label=JOB_SPECS[kind][0],
+                               command=lambda k=kind: self.on_run_job(k))
+        m_tool.add_command(label="机位校准（引导式，8 帧）", command=self.on_preflight)
+        m_tool.add_separator()
+        self.var_show_log = tk.BooleanVar(value=True)
+        m_tool.add_checkbutton(label="显示运行日志面板", variable=self.var_show_log,
+                               command=self.on_toggle_log_panel)
+        m_tool.add_command(label="清空日志", command=self.on_clear_log)
+        menubar.add_cascade(label="工具", menu=m_tool)
+
+        m_help = tk.Menu(menubar, tearoff=0)
+        m_help.add_command(label="关于", command=self.on_about)
+        m_help.add_command(label="查看交付流程文档",
+                           command=lambda: self.on_open_doc("docs/软件化交付流程.md"))
+        menubar.add_cascade(label="帮助", menu=m_help)
+
+        self.root.config(menu=menubar)
 
     # ------------------------------------------------------------ 动作
     def _build_args(self, overrides: dict) -> argparse.Namespace:
@@ -368,7 +602,139 @@ class Console:
         except Exception:
             self.var_msg.set(f"输出目录：{self.out_root}")
 
+    # ------------------------------------------------------------ 日志与长任务
+    def _log_line(self, text: str) -> None:
+        """往 ⑥ 面板追加一行；超过 LOG_MAX_LINES 从头部删（只增不删会越跑越卡）。"""
+        t = self.log_text
+        t.configure(state="normal")
+        t.insert("end", text + "\n")
+        self.log_lines += 1
+        if self.log_lines > LOG_MAX_LINES:
+            drop = self.log_lines - LOG_MAX_LINES
+            t.delete("1.0", f"{drop + 1}.0")
+            self.log_lines = LOG_MAX_LINES
+        t.see("end")
+        t.configure(state="disabled")
+
+    def on_clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+        self.log_lines = 0
+
+    def on_toggle_log_panel(self) -> None:
+        if self.var_show_log.get():
+            self.log_box.grid()
+        else:
+            self.log_box.grid_remove()
+
+    def on_run_job(self, kind: str) -> None:
+        """跑一个长任务：统一走 `launcher.py` 子命令（门面唯一，错误码才一致）。"""
+        spec = JOB_SPECS.get(kind)
+        if spec is None:
+            return
+        label, argv = spec
+        if self.job.running():
+            messagebox.showinfo("已有长任务在跑",
+                                f"当前正在跑：{self.job.label}\n"
+                                "先「运行 → 停止长任务」再试。")
+            return
+        launcher_py = PROJECT_ROOT / "launcher.py"
+        if not launcher_py.exists():
+            messagebox.showerror("缺少启动器", f"找不到 {launcher_py}")
+            return
+        self.var_show_log.set(True)
+        self.on_toggle_log_panel()
+        self._log_line("")
+        self._log_line(f"==== [{datetime.now():%H:%M:%S}] {label} ====")
+        self._log_line(f"$ {Path(sys.executable).name} launcher.py {' '.join(argv)}")
+        if not self.job.start([sys.executable, str(launcher_py)] + argv,
+                              label, kind, cwd=PROJECT_ROOT):
+            return
+        self.var_msg.set(f"{label}：已启动（输出见 ⑥ 运行日志）")
+
+    def on_stop_job(self) -> None:
+        if not self.job.running():
+            self._log_line("[--] 当前没有在跑的长任务")
+            return
+        self._log_line(f"[--] 正在停止「{self.job.label}」（先 CTRL_BREAK，5 秒不退则杀进程树）…")
+        self.job.stop()
+        self.var_msg.set(f"{self.job.label}：正在停止…")
+
+    def _drain_job(self) -> None:
+        """界面刷新时调：把子进程已产出的行搬进面板（**只在这里碰控件**）。"""
+        for item in self.job.drain():
+            if isinstance(item, tuple) and item and item[0] == "exit":
+                self._finish_job(int(item[1]))
+            else:
+                self._log_line(str(item))
+
+    def _finish_job(self, rc: int) -> None:
+        job = self.job
+        verdict = self._verdict(job.kind, rc, job.stop_requested)
+        self._log_line(f"[结束] {job.label}：{verdict}（退出码 {rc}，"
+                       f"用时 {job.elapsed():.1f}s）")
+        self.var_msg.set(f"{job.label}：{verdict}（退出码 {rc}）")
+
+    @staticmethod
+    def _verdict(kind: str, rc: int, stopped: bool) -> str:
+        """返回码翻成人话：现场不需要知道数字含义，只需要知道"过了没、去哪看"。"""
+        if stopped and rc != 0:
+            return "已由用户停止"
+        base = kind.split("-")[0]
+        if rc == 0:
+            return {"doctor": "自检通过", "check": "详细检查通过",
+                    "regress": "回归通过", "soak": "长稳完成"}.get(base, "成功")
+        if base == "doctor":
+            return "自检发现问题（见上方 [!!] 行）"
+        if base == "check":
+            return "检查未通过（见上方 FAIL 行）"
+        if base == "regress":
+            return "回归未全通过，报告见 runs/acceptance/<时间戳>/report.md"
+        if base == "soak":
+            return "长稳未达标，报告见 runs/soak/<时间戳>/"
+        return RC_LABEL.get(rc, f"退出码 {rc}")
+
+    def on_about(self) -> None:
+        cfg, note = PROJECT_ROOT / "config.toml", ""
+        url = "http://127.0.0.1:8000"
+        try:
+            import tomllib
+            if cfg.is_file():
+                with cfg.open("rb") as fh:
+                    url = tomllib.load(fh).get("server", {}).get("url", url)
+                note = str(cfg)
+            else:
+                note = f"{cfg}（缺失，用内置默认值）"
+        except Exception as exc:  # noqa: BLE001
+            note = f"{cfg}（解析失败：{exc}）"
+        messagebox.showinfo(
+            "关于 EgoMed-Agent",
+            "\n".join([
+                "EgoMed-Agent 现场控制台（N26 / N53）",
+                f"软件版本：v{APP_VERSION}",
+                f"契约版本：{CONTRACT_VERSION}",
+                f"Python：{sys.executable}",
+                f"项目根：{PROJECT_ROOT}",
+                f"服务端：{url}",
+                f"配置：{note}",
+                f"输出：{self.out_root}",
+            ]))
+
+    def on_open_doc(self, rel: str) -> None:
+        path = PROJECT_ROOT / rel
+        if not path.is_file():
+            self._log_line(f"[!!] 文档不存在：{path}")
+            return
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            self._log_line(f"[--] 文档路径：{path}")
+
     def _on_close(self) -> None:
+        # 长任务不跟着界面一起"悄悄消失"：它在后台起了服务端，必须一起收掉
+        if self.job.running():
+            self.job.stop()
         if self.runner is not None:
             self.runner.stop = True
             time.sleep(0.3)
@@ -390,6 +756,7 @@ class Console:
 
     def _tick_once(self) -> None:
         self._ticks += 1
+        self._drain_job()        # ⑥ 面板：先把长任务已产出的行搬上来
         st = self.runner.stats if self.runner is not None else None
         if st is not None:
             now = time.perf_counter()
@@ -454,14 +821,57 @@ def main(argv=None) -> int:
     ap.add_argument("--selftest", action="store_true", help="只构建界面自检（无人值守）")
     ap.add_argument("--autotest", type=float, default=0.0, metavar="SEC",
                     help="端到端自测：自动设目标 -> 开始 -> 录制 -> 跑 SEC 秒 -> 停止并打印指标")
+    ap.add_argument("--selftest-job", default="", metavar="KIND",
+                    help="无人值守验证 ⑥ 日志面板：自动跑一个长任务 "
+                         "(doctor / check / regress-mock)，结束打印日志统计")
     args = ap.parse_args(argv)
 
     root = tk.Tk()
     con = Console(root, args.doctor)
     if args.selftest:
-        root.after(600, root.destroy)
+        info: dict = {}
+
+        def _collect_and_quit() -> None:
+            info["menu"] = bool(root["menu"])
+            info["log"] = con.log_box.winfo_manager() or "未显示"
+            info["lines"] = con.log_lines
+            root.destroy()
+
+        root.after(600, _collect_and_quit)
         root.mainloop()
-        mc.log("[selftest] 界面构建与刷新正常 ✓")
+        mc.log(f"[selftest] 界面构建与刷新正常 | 软件 v{APP_VERSION} 契约 {CONTRACT_VERSION} | "
+               f"菜单栏 {'有' if info.get('menu') else '无'} | "
+               f"日志面板 {info.get('log')} | 日志 {info.get('lines')} 行")
+        return 0
+    if args.selftest_job:
+        con.on_run_job(args.selftest_job)
+        deadline = time.time() + 240
+
+        def _watch() -> None:
+            if con.job.running():
+                if time.time() > deadline:
+                    mc.log("[selftest-job] 超时未结束，强制停止")
+                    con.job.stop()
+                    root.after(1500, _report_job)
+                else:
+                    root.after(300, _watch)
+                return
+            if not con.job.started_at:
+                mc.log("[selftest-job] 子进程未能启动")
+                root.destroy()
+                return
+            root.after(800, _report_job)     # 留一个刷新周期把残余输出搬完
+
+        def _report_job() -> None:
+            tail = [ln for ln in con.log_text.get("end-6l", "end-1c").splitlines() if ln.strip()]
+            mc.log(f"[selftest-job] {con.job.label} | 退出码 {con.job.rc} | "
+                   f"日志 {con.log_lines} 行 | 停止标志 {con.job.stop_requested}")
+            for line in tail[-4:]:
+                mc.log(f"[selftest-job]   {line}")
+            root.destroy()
+
+        root.after(400, _watch)
+        root.mainloop()
         return 0
     if args.autotest > 0:
         # 自动走一遍完整流程，最后打印指标（供无人值守验证 GUI 逻辑）

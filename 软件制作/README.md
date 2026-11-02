@@ -17,9 +17,10 @@
 
 | 文件 | 现在的位置 | 说明 |
 |---|---|---|
-| `launcher.py` | `./launcher.py` | 统一启动器 v0.2（9 个子命令） |
+| `launcher.py` | `./launcher.py` | 统一启动器 v0.2（9 个子命令，全部已实装） |
 | `egomed.bat` | `./egomed.bat` | 唯一入口壳（解释器兜底 + 透传退出码） |
 | `config.toml` | `./config.toml` | 唯一配置源 |
+| `VERSION` | `./VERSION` | 软件版本号**唯一来源**（`--version` 与 GUI「关于」同源） |
 
 ## 旧 bat 的现状（增量 1 收尾完成）
 
@@ -31,6 +32,19 @@
 | `启动模拟眼镜.bat` | `egomed.bat sim` | `client/launch_sim_glasses.py` |
 | `现场控制台.bat` | `egomed.bat console` | `client/live_console.py` |
 | `环境自检.bat` | `egomed.bat check` | `scripts/check_env.py` |
+
+## 增量 2（GUI 菜单 + 运行日志）已完成 — 2026-11-02
+
+`client/live_console.py` 加了菜单栏与 ⑥ 运行日志面板，长任务都能在界面里看实时输出：
+
+| 菜单项 | 等价命令 | 下游脚本 |
+|---|---|---|
+| 工具 → 环境自检 | `egomed.bat doctor` | `launcher.py` 内置 |
+| 工具 → 详细环境检查 | `egomed.bat check` | `scripts/check_env.py` |
+| 运行 → 一键回归（mock 套件） | `egomed.bat regress --suite mock` | `client/run_regression.py` |
+| 运行 → 一键回归（完整） | `egomed.bat regress` | `client/run_regression.py` |
+| 运行 → 长稳测试（60 分钟） | `egomed.bat soak --minutes 60` | `client/run_soak.py` |
+| 运行 → 停止长任务 | —（GUI 内） | 先 CTRL_BREAK，5s 不退再 taskkill /T |
 
 ## 验证方式（不需要服务端）
 
