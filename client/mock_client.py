@@ -169,7 +169,8 @@ def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: fl
 
 # ---------------------------------------------------------------- 结果保存
 def set_target(url: str, session_id: str, audio_dir: Path | None = None,
-               timeout: float = 15.0, verbose: bool = True):
+               timeout: float = 15.0, verbose: bool = True,
+               first_timeout: float | None = None):
     """用样例语音给会话设置分割目标（A2）。
 
     **逐个尝试**目录里的 wav，跳过"没听清 / 跨模态歧义（need_confirm）"的，
@@ -178,14 +179,24 @@ def set_target(url: str, session_id: str, audio_dir: Path | None = None,
     为什么不能只用第一个 wav：`cmd_01.wav`（"帮我分割左心室"）在 MRI 与超声里都存在，
     服务端按契约返 `need_confirm`、`target` 为空 —— 这是**设计**不是失败。
     压测/长稳前必须拿到非空 target，否则服务端不跑推理（会退化成"空跑"）。
+
+    `first_timeout`
+    --------------
+    **只给第一个 wav** 用的超时。真引擎的"预热"只加载模型权重、不跑推理，
+    所以第一次真实语音请求会触发 ASR 首次推理（2026-11-02 实测：第 1 次 >180s 超时、
+    第 2 次 75s、第 3 次 2s 才正常）。用稳态超时（15s）去卡冷启动，会把
+    "第一次慢"误判成"服务不可用"，长稳直接放弃。真引擎场景请传 240s 左右。
     """
     d = Path(audio_dir) if audio_dir else (PROJECT_ROOT / "data" / "samples" / "audio")
     cands = sorted([p for p in d.glob("*.wav")], key=natural_key)
     if not cands:
         return "", "", None, f"没有可用语音样例：{d}"
     last_payload, last_err = None, None
-    for w in cands:
-        payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, timeout)
+    for i, w in enumerate(cands):
+        t = first_timeout if (i == 0 and first_timeout) else timeout
+        if i == 0 and first_timeout and verbose:
+            log(f"  · 首次语音请求用长超时 {t:.0f}s（ASR 冷启动，后续按 {timeout:.0f}s）")
+        payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, t)
         last_payload, last_err = payload, err
         if err or not isinstance(payload, dict):
             if verbose:

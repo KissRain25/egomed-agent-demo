@@ -234,7 +234,11 @@ def main() -> int:
 
     # 设目标（没 target 服务端不跑推理 → 长稳会变成无意义的空跑，必须拿到）
     log("[2/3] 设置分割目标（逐个样例语音试，跳过歧义句）…")
-    target, used_wav, _, terr = mc.set_target(url, sid, Path(args.audio_dir), 15.0)
+    # 真引擎的"预热"只加载权重不跑推理：第一次 A2 会触发 ASR 首次推理，
+    # 2026-11-02 实测 第1次>180s / 第2次75s / 第3次2s。稳态 15s 超时会把它误判成服务挂掉。
+    target, used_wav, _, terr = mc.set_target(
+        url, sid, Path(args.audio_dir), 15.0,
+        first_timeout=(300.0 if real else None))
     if not target:
         log(f"  [错误] 没能设上 target（err={terr}）—— 没有目标时服务端不跑推理，"
             f"长稳会空跑，已中止")
