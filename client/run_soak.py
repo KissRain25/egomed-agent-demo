@@ -95,6 +95,43 @@ def gpu_mem_mb() -> float | None:
         return None
 
 
+def gpu_proc_mb(pid: int) -> float | None:
+    """**进程级**显存（MB）：Windows 性能计数器口径。
+
+    为什么不用 nvidia-smi：本机是 WDDM 模式，
+    `nvidia-smi --query-compute-apps=pid,used_memory` 的显存列全是 `N/A`。
+    实测（2026-11-03 第四轮长稳）：整卡从 4422MB 涨到 7157MB 被误判成
+    「服务端显存增长」，而本函数量到的服务端**恒定 3465MB**，
+    多出来的 4.9GB 是运行中途启动的游戏进程 —— 没有进程级数据就写错结论。
+
+    取不到（计数器不可用 / 进程已退出）时返回 None，调用方需容错。
+    """
+    try:
+        # 实例名形如 pid_<PID>_luid_0x..._phys_0；同一 PID 可能有多块 GPU 的实例，
+        # 所以要 **求和**，且 PID 后面必须跟下划线（避免 55828 误匹配 558280）。
+        cmd = (
+            "(Get-Counter '\\GPU Process Memory(pid_*)\\Dedicated Usage')"
+            ".CounterSamples | "
+            f"Where-Object {{ $_.InstanceName -match 'pid_{pid}_' }} | "
+            "Measure-Object -Property CookedValue -Sum | "
+            "Select-Object -ExpandProperty Sum"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="ignore", timeout=25,
+        )
+        val = (out.stdout or "").strip().splitlines()
+        if not val:
+            return None
+        total = float(val[0])
+        if total <= 0:
+            return None
+        return round(total / 1048576, 1)
+    except Exception:
+        return None
+
+
 def rss_mb(pid: int) -> float | None:
     """进程常驻内存（MB）：优先 psutil，退回 tasklist。"""
     try:
@@ -302,13 +339,15 @@ def main() -> int:
                     "s_p95": pct([r["s"] for r in ok_b if r["s"] is not None], 95),
                     "err": sum(1 for r in rows_b if r["err"]),
                     "gpu_mb": gpu_mem_mb(),
+                    "gpu_proc_mb": gpu_proc_mb(server_pid) if server_pid else None,
                     "rss_mb": rss_mb(server_pid) if server_pid else None,
                 }
                 buckets.append(b)
                 log(f"  [{b['min']:>5.1f} min] 桶{b['bucket']:<3} n={b['n']:<5} fps={b['fps']:<5} "
                     f"客户端 P50/P95={b['c_p50']:.0f}/{b['c_p95']:.0f}ms "
                     f"服务端 P50/P95={b['s_p50']:.0f}/{b['s_p95']:.0f}ms "
-                    f"err={b['err']} | RSS={b['rss_mb']}MB GPU={b['gpu_mb']}MB")
+                    f"err={b['err']} | RSS={b['rss_mb']}MB "
+                    f"GPU(整卡)={b['gpu_mb']}MB GPU(进程)={b['gpu_proc_mb']}MB")
                 last_sample = now
                 # 边跑边落盘（中途被打断也有数据）
                 _dump(out_dir, args, url, target, rows, buckets, None)
@@ -361,8 +400,16 @@ def _judge(args, rows, buckets, crashed, wall):
         if gs:
             grow = gs[-1] - gs[0]
             limit = min(GPU_GROWTH_MB, max(gs[0], 1.0) * 0.2)
-            checks.append(("显存零增长", grow <= limit,
+            checks.append(("显存零增长（整卡口径）", grow <= limit,
                            f"{gs[0]:.0f}MB → {gs[-1]:.0f}MB（{grow:+.0f}MB，上限 {limit:.0f}MB）"))
+        # 进程级口径：**判定阈值与整卡完全一致**（不放宽），只是把「服务端自己的
+        # 显存」和「别人的程序占的显存」分开。取不到数据就不参与判定。
+        ps = [b.get("gpu_proc_mb") for b in buckets if b.get("gpu_proc_mb") is not None]
+        if ps:
+            pgrow = ps[-1] - ps[0]
+            plimit = min(GPU_GROWTH_MB, max(ps[0], 1.0) * 0.2)
+            checks.append(("显存零增长（进程级口径）", pgrow <= plimit,
+                           f"{ps[0]:.0f}MB → {ps[-1]:.0f}MB（{pgrow:+.0f}MB，上限 {plimit:.0f}MB）"))
         rs = [b["rss_mb"] for b in buckets if b["rss_mb"] is not None]
         if rs:
             checks.append(("服务端内存无明显增长（观察项）", rs[-1] - rs[0] <= 200.0,
@@ -391,6 +438,9 @@ def _dump(out_dir: Path, args, url, target, rows, buckets, final) -> None:
     lines = [f"# 长稳基线报告 {data['head']['date']}", "",
              f"- 服务器 `{url}`　时长 {args.minutes:g} 分钟 @ {args.fps:g} fps"
              f"（{'假实现' if args.fake else '真引擎'}）　分割目标 `{target}`",
+             "- 显存口径：`GPU(整卡)` = 整卡占用（**含桌面等其他程序**）；"
+             "`GPU(进程)` = 服务端进程自身占用。两者必须分开看，"
+             "否则外部程序抢占会被误判成服务端泄漏。",
              f"- 总请求 {len(rows)}"]
     if final:
         lines += ["", f"## 结论：{final[0]}", "",
@@ -399,13 +449,17 @@ def _dump(out_dir: Path, args, url, target, rows, buckets, final) -> None:
             lines.append(f"| {n} | {'PASS' if ok else '**FAIL**'} | {d} |")
     if buckets:
         lines += ["", "## 采样桶（每桶约 " + f"{args.sample_sec:g}s）", "",
-                  "| 桶 | 分钟 | 请求 | fps | 客户端 P50/P95 | 服务端 P50/P95 | err | 服务端 RSS | GPU |",
-                  "|---:|-----:|-----:|----:|--------------:|--------------:|----:|-----------:|----:|"]
+                  "> `GPU(整卡)` 是整卡显存占用（**含桌面等其他程序**）；"
+                  "`GPU(进程)` 是服务端进程自己的显存。两者分开看，才能分清"
+                  "「服务端泄漏」与「外部程序抢占」。", "",
+                  "| 桶 | 分钟 | 请求 | fps | 客户端 P50/P95 | 服务端 P50/P95 | err | 服务端 RSS | GPU(整卡) | GPU(进程) |",
+                  "|---:|-----:|-----:|----:|--------------:|--------------:|----:|-----------:|----:|---:|"]
         for b in buckets:
             lines.append(
                 f"| {b['bucket']} | {b['min']} | {b['n']} | {b['fps']} | "
                 f"{b['c_p50']:.0f}/{b['c_p95']:.0f} ms | {b['s_p50']:.0f}/{b['s_p95']:.0f} ms | "
-                f"{b['err']} | {b['rss_mb']} MB | {b['gpu_mb']} MB |")
+                f"{b['err']} | {b['rss_mb']} MB | {b['gpu_mb']} MB | "
+                f"{b.get('gpu_proc_mb', '—')} MB |")
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
