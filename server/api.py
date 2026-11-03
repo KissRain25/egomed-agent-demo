@@ -35,7 +35,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -151,6 +151,12 @@ class Session:
         self.frames_processed: int = 0
         self.frame_counter: int = 0       # 滚动窗口文件名自增计数
         self.last_update: float = time.time()
+        # 2026-11-03 新增（议题①"请求级超时/取消"的**可观测部分**，零契约变更）：
+        # dropped_frames —— 服务端侧被新帧覆盖而丢弃的帧数（latest-wins 语义）；
+        # client_gone    —— 帧算完了但客户端已经断开（多半是客户端 3s 超时后关了连接）。
+        # 这两个计数只进 /healthz（运维接口）与服务端日志，**不进契约响应体**。
+        self.dropped_frames: int = 0
+        self.client_gone: int = 0
 
         # P0.1 丢帧语义：每会话串行 + 队列长度=1 + 新帧覆盖旧的未处理帧。
         # 帧处理用 condition 协调（latest-wins）；音频用普通锁串行即可。
@@ -194,6 +200,7 @@ class Session:
                     continue
                 if self._latest_seq <= self._done_seq:
                     # 已有更新帧被处理完，本帧被覆盖丢弃：返回最新结果并标记 dropped（T9）
+                    self.dropped_frames += 1
                     out = dict(self._last_result or {})
                     out["_wait_ms"] = _ms(wait_t0)
                     out["_encode_ms"] = 0
@@ -964,6 +971,7 @@ app = FastAPI(title="EgoMed-Agent Server", version="1.0.4")
 
 @app.post(FRAME_ENDPOINT)
 async def post_frame(
+    request: Request,
     session_id: Optional[str] = Form(None),
     timestamp: Optional[str] = Form(None),  # 契约 §4：Unix 毫秒整数，必填（P2.9）
     image: Optional[UploadFile] = File(None),
@@ -1033,6 +1041,21 @@ async def post_frame(
                payload.get("target", ""), elapsed_ms,
                "dropped" if dropped else "ok",
                wait_ms=wait_ms, infer_ms=infer_ms, encode_ms=encode_ms)
+
+    # 2026-11-03（议题①"请求级超时/取消"）：客户端 3s 超时后会关掉连接，服务端这边
+    # **照样把这一帧算完**（latest-wins 队列长度 1，中间帧本来就不会被推理，
+    # 真正浪费的只有"超时那一刻正在算的这一帧"）。
+    # 这里只做**可观测**：计数 + 日志，**不改变行为**（仍然照常返回，不主动放弃推理）。
+    # 真正的"取消通道"要改契约（客户端告知服务端放弃该帧）→ 收益仅省 1 帧，留待裁决。
+    try:
+        gone = await request.is_disconnected()
+    except Exception:  # noqa: BLE001  探活失败不影响主流程
+        gone = False
+    if gone:
+        s.client_gone += 1
+        _log.info("session=%s | 客户端已断开（多半是 3s 超时后关闭），"
+                  "本帧结果无人接收（累计 %d 帧）", session_id, s.client_gone)
+
     return JSONResponse(payload)
 
 
@@ -1150,6 +1173,16 @@ async def healthz():
     /healthz 报 200 而引擎根本没加载，故障被推迟到第一个请求变成 500。
     """
     state = _SERVER_STATE
+    # 2026-11-03：暴露会话级计数（议题①的可观测部分）。
+    # dropped_frames —— 服务端侧被新帧覆盖丢弃的帧数；
+    # client_gone    —— 帧算完了但客户端已断开（多半是客户端 3s 超时后关了连接）。
+    # /healthz 是**非契约运维接口**（契约 P2.11 白名单），加字段不影响契约版本。
+    dropped_total = 0
+    gone_total = 0
+    with _SESSIONS_LOCK:
+        for _s in _SESSIONS.values():
+            dropped_total += _s.dropped_frames
+            gone_total += _s.client_gone
     body = {
         "status": "ok",
         "sessions": len(_SESSIONS),
@@ -1157,6 +1190,8 @@ async def healthz():
         "state": state,
         "rss_mb": _rss_mb(),
         "gpu_mem_mb": _gpu_mem_mb(),
+        "dropped_frames": dropped_total,
+        "client_gone": gone_total,
     }
     if state == "failed":
         body["warmup_error"] = _WARMUP_ERROR

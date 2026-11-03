@@ -46,6 +46,7 @@ REG_ROOT = PROJECT_ROOT / "runs" / "regression"
 
 WARMUP_TIMEOUT_REAL = 300.0    # 真引擎预热（含 ASR medium），给足余量
 READY_TIMEOUT_MOCK = 40.0      # 假实现秒级启动
+PRIME_TIMEOUT_REAL = 300.0     # ASR 冷启动预热上限（实测首条 88.9s，外部抢显存时更久）
 
 
 def log(msg: str = "") -> None:
@@ -118,6 +119,44 @@ def stop_server(proc: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         proc.kill()
     log("    · 服务端已关闭")
+
+
+def prime_asr(url: str, timeout: float = 300.0) -> bool:
+    """真引擎：先发一条样例语音，把 **ASR 冷启动**吃掉，再跑验收用例。
+
+    为什么必须做（2026-11-03 实测）：
+      · ASR 的"预热"只加载权重，**第一次真实推理**还要做 CUDA kernel 加载 /
+        cuDNN autotune —— 实测首条 **88.9s**（外部进程抢显存时更久），后续 1~2s；
+      · 而验收用例的语音超时只有 30s → 首条 A2 必然超时；
+      · 服务端**并不会因为客户端超时而停下**，它还在算 → 后面 7 条语音排着队，
+        结果 **8 条全判失败**（实测 1/10 PASS），看起来像"功能坏了"，其实是"还没热"。
+
+    这一步把这笔冷启动单独花掉（和 `egomed.bat warmup` 同一套逻辑），
+    后面 R2 量到的才是**稳态 1~2s** 的真实口径。
+    """
+    sys.path.insert(0, str(PROJECT_ROOT / "client"))
+    try:
+        import mock_client as mc
+    except Exception as exc:  # noqa: BLE001
+        log(f"      [!!] 载入客户端工具失败：{exc}（跳过预热）")
+        return False
+    sid = mc.make_session_id("prime")
+    t0 = time.time()
+    log(f"      · 预热 ASR（发一条样例语音，最长等 {timeout:.0f}s）…")
+    try:
+        target, used_wav, _payload, err = mc.set_target(
+            url, sid, None, 15.0, verbose=True,
+            first_timeout=timeout, wait_ready_s=timeout)
+    except Exception as exc:  # noqa: BLE001
+        log(f"      [!!] 预热异常：{exc}")
+        return False
+    spent = time.time() - t0
+    if target:
+        log(f"      [OK] ASR 已热（{used_wav} → {target!r}，{spent:.0f}s）")
+        return True
+    log(f"      [!!] 预热没拿到目标（err={err}，{spent:.0f}s）—— "
+        f"语音用例可能仍会因冷启动超时而失败")
+    return False
 
 
 def latest_reports(before: set[Path]) -> list[Path]:
@@ -216,6 +255,9 @@ def main() -> int:
     ap.add_argument("--keep-server", action="store_true", help="跑完不关服务端")
     ap.add_argument("--skip-contract", action="store_true",
                     help="跳过服务端契约一致性检查（mock 套件后自动跑，12 个错误分支用例）")
+    ap.add_argument("--skip-prime", action="store_true",
+                    help="跳过真引擎的 ASR 预热（不预热则 ASR 冷启动首条语音可能 >30s 超时，"
+                         "导致语音用例整片判失败）")
     args = ap.parse_args()
 
     url = args.url or f"http://127.0.0.1:{args.port}"
@@ -265,6 +307,9 @@ def main() -> int:
                         stop_server(started)
                         results.append((s, False, None, "服务端未就绪"))
                         continue
+                    # 真引擎：把 ASR 冷启动单独花掉（否则 8 条语音会因首条超时而全判失败）
+                    if need_real and not args.skip_prime:
+                        prime_asr(url, timeout=PRIME_TIMEOUT_REAL)
             ok, rep_dir, summary = run_suite(s, url, args)
             results.append((s, ok, rep_dir, summary))
             # 契约一致性检查：放在 mock 套件之后、关服务端之前 ——

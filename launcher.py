@@ -45,7 +45,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-FALLBACK_VERSION = "0.2.2"      # VERSION 文件缺失时的兜底，正常不该走到
+FALLBACK_VERSION = "0.2.3"      # VERSION 文件缺失时的兜底，正常不该走到
 # 2026-11-03：随 v1.0.6（决议 #16：candidates 语义统一为「候选模态名」）升到 v1.0.6。
 # 此前变更记录已写 v1.0.4、但常量没跟，导致诊断包 versions.json 报旧契约版本 —— 这条要盯住。
 CONTRACT_VERSION = "v1.0.6"

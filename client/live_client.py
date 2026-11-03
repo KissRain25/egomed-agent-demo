@@ -60,6 +60,32 @@ LAT_SAMPLES = 500            # 延迟样本上限
 # retry_after_s 节奏重试同一个 wav（与 set_target 的既有行为一致）。
 A2_WAIT_READY_S = 120.0
 
+# 2026-11-03（议题①"请求级超时/取消"）：首帧的长超时上限（秒）。
+# 真引擎的"预热"只加载权重，**第一次真实推理**还要做 CUDA kernel 加载 / cuDNN autotune，
+# 实测可以到数秒~数十秒 > 3s 稳态超时。原来首帧超时被直接判成失败（E1003），
+# 医生看到的第一帧就是"超时"。现在首帧超时且服务端探活确认"服务在"时，用这个上限重试一次。
+FIRST_TIMEOUT_DEFAULT = 120.0
+
+
+def _is_timeout(err) -> bool:
+    """错误串是不是"超时"（mock_client 把超时编码成 `超时（>3s）`）。"""
+    return isinstance(err, str) and err.startswith("超时")
+
+
+def _server_alive(url: str, timeout: float = 2.0) -> bool:
+    """`/healthz` 探活（**非契约**运维接口，契约 P2.11 白名单）。
+
+    返回 True = 服务端在应答（200 或 503 都算"有人在"）；
+    False = 连不上 → 那就别等了，直接按 E1002 报"连不上服务端"，别让用户干等长超时。
+    """
+    try:
+        import requests
+        r = requests.get(url.rstrip("/") + "/healthz", timeout=timeout)
+        return r.status_code in (200, 503)
+    except Exception:  # noqa: BLE001  探活失败一律当作"连不上"
+        return False
+
+
 _FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msyh.ttc",     # 微软雅黑
     r"C:\Windows\Fonts\simhei.ttf",   # 黑体
@@ -1419,6 +1445,7 @@ class Stats:
         self.need_confirm_count = 0  # 需澄清次数（跨模态歧义，契约边界情况 2）
         self.voice_rejected = 0      # N37: 识别不可靠（空文本/未解析出目标）被客户端拒识的语音条数
         self.dropped = 0         # 被新帧覆盖而丢弃
+        self.timeouts = 0        # 请求超时次数（2026-11-03 新增，见 add_latency 口径说明）
         self.overlay_nonempty = 0
         self.latencies: list[float] = []
         self.errors: list[str] = []
@@ -1428,6 +1455,13 @@ class Stats:
         self.first_ok_at: float | None = None
 
     def add_latency(self, ms: float) -> None:
+        """记一个**延迟样本**。
+
+        2026-11-03（议题①核心修复）口径变更：**只有服务端正常应答（err is None）的
+        请求才进延迟样本**。原实现无条件记，于是 3s 超时被当成"服务端延迟 3000ms"
+        计入 → P95/均值全被"客户端等不到"污染，指标完全不可信（实测真引擎首帧超时
+        就能把 P95 直接顶到 3000ms）。超时改为单列 `Stats.timeouts` 计数。
+        """
         self.latencies.append(ms)
         if len(self.latencies) > LAT_SAMPLES:
             del self.latencies[:len(self.latencies) - LAT_SAMPLES]
@@ -1449,10 +1483,14 @@ class Stats:
 # ===========================================================================
 class FramePump:
     def __init__(self, url: str, session_id: str, timeout: float, stats: Stats,
-                 on_result):
+                 on_result, first_timeout: float = 0.0):
         self.url = url
         self.session = session_id
         self.timeout = timeout
+        # 2026-11-03（议题①）：首帧长超时上限（0 = 不启用）。
+        # 只对**第一帧**生效：首帧超时且服务端探活确认"服务在"时，用它重试一次。
+        self.first_timeout = max(0.0, first_timeout)
+        self._first_try = True
         self.stats = stats
         self.on_result = on_result
         self._lock = threading.Lock()
@@ -1482,7 +1520,27 @@ class FramePump:
                 return
             payload, elapsed, err = mc.post_frame(
                 self.url, self.session, jpg, f"live_{index:05d}.jpg", self.timeout)
-            self.stats.add_latency(elapsed)
+            # 2026-11-03（议题①）：首帧超时自适应放宽。
+            # 真引擎首次推理要冷启动（CUDA kernel / cuDNN autotune），可能 >3s；
+            # 首帧超时**不等于**服务不可用。这里只在"首帧 + 确认是超时 + 探活确认
+            # 服务端在应答"三个条件同时满足时，用长超时重试同一帧一次。
+            # 探活失败 → 服务端压根没起来 → 不重试（否则白等一个长超时）。
+            if err is not None and self._first_try:
+                self._first_try = False
+                if (self.first_timeout > self.timeout and _is_timeout(err)
+                        and _server_alive(self.url)):
+                    mc.log(f"[A1] 首帧超时（{err}），服务端在应答 → "
+                           f"用长超时 {self.first_timeout:g}s 重试一次")
+                    payload, elapsed, err = mc.post_frame(
+                        self.url, self.session, jpg, f"live_{index:05d}.jpg",
+                        self.first_timeout)
+            else:
+                self._first_try = False
+            # 延迟样本口径：**只有服务端正常应答才计入**（超时/错误不算延迟）。
+            if err is None:
+                self.stats.add_latency(elapsed)
+            elif _is_timeout(err):
+                self.stats.timeouts += 1
             with self._lock:
                 self.stats.sent += 1
                 if self.stats.first_ok_at is None and err is None:
@@ -1523,7 +1581,8 @@ class LiveRunner:
         self.samples_dir = self.out_dir / "samples"
         self.session_id = args.session or mc.make_session_id(args.doctor)
         self.pump = FramePump(args.url, self.session_id, args.timeout, self.stats,
-                              self._on_result)
+                              self._on_result,
+                              first_timeout=getattr(args, "first_timeout", 0.0))
         # N35 回显层：窗口 / 落盘 / AR 镜片，主循环只调 present()
         self.renderer = build_renderer(args, self.out_dir)
 
@@ -1783,6 +1842,10 @@ class LiveRunner:
         st = self.stats
         submit_fps = st.submitted / elapsed if elapsed > 0 else 0.0
         send_fps = st.sent / elapsed if elapsed > 0 else 0.0
+        # 2026-11-03（议题①）：结果刷新率改用**服务端正常应答的帧数**（st.ok）。
+        # 原用 st.sent（把超时/失败的请求也算成"刷了一帧"）→ 服务端压根没回也计数，
+        # 指标虚高。现在"刷新率"= 真的拿到结果图的帧 / 总时长。
+        refresh_fps = st.ok / elapsed if elapsed > 0 else 0.0
         display_fps = self.frames_read / elapsed if elapsed > 0 else 0.0
         # 服务端侧上限：并发=1 时完成率 ≈ 1/单帧耗时（P0.1 丢帧语义下的物理上限）
         server_cap = (1000.0 / st.mean) if st.mean > 0 else float("inf")
@@ -1794,17 +1857,20 @@ class LiveRunner:
         #   ① 提交节奏：客户端是否按 --fps 提交（不受服务端影响）
         #   ② 结果刷新率：是否达到"服务端能力上限"的 80%（在服务端能力内不额外损失）
         submit_ok = submit_fps >= self.args.fps * 0.8
-        refresh_ok = send_fps >= expected_fps * 0.8
+        refresh_ok = refresh_fps >= expected_fps * 0.8
         err_ok = (st.http_err + st.biz_err) == 0
 
         checks = [
             ("M1 提交节奏 ≥ 80% 目标（客户端）",
              f"{submit_fps:.2f} / 目标 {self.args.fps:g} fps", submit_ok),
             ("M2 结果刷新率 ≥ 80% 服务端能力",
-             f"{send_fps:.2f} fps（上限≈{server_cap:.2f} fps，均值延迟 {st.mean:.0f}ms）",
+             f"{refresh_fps:.2f} fps（上限≈{server_cap:.2f} fps，均值延迟 {st.mean:.0f}ms）",
              refresh_ok),
-            ("M1 无网络/业务错误", f"HTTP 错 {st.http_err} / 业务错 {st.biz_err}", err_ok),
-            ("M2 延迟 P95 < 3000ms", f"P95 {st.pct(95):.0f}ms（均值 {st.mean:.0f}ms）", lat_ok),
+            ("M1 无网络/业务错误",
+             f"HTTP 错 {st.http_err}（其中超时 {st.timeouts}）/ 业务错 {st.biz_err}", err_ok),
+            ("M2 延迟 P95 < 3000ms",
+             f"P95 {st.pct(95):.0f}ms（均值 {st.mean:.0f}ms；样本=成功应答 "
+             f"{len(st.latencies)} 次，超时 {st.timeouts} 次不计入）", lat_ok),
             ("M5 抽样帧落盘", f"{len(list(self.samples_dir.glob('*.jpg'))) if self.samples_dir.exists() else 0} 张",
              (not self.args.save_frames) or self.samples_dir.exists()),
         ]
@@ -1832,7 +1898,8 @@ class LiveRunner:
             f"| 提交发帧 | {st.submitted} |",
             f"| 实际发送 | {st.sent}（被新帧覆盖丢弃 {st.dropped}） |",
             f"| 提交节奏 | {submit_fps:.2f} fps（目标 {self.args.fps:g} fps） |",
-            f"| 结果刷新率 | {send_fps:.2f} fps（服务端上限≈{server_cap:.2f} fps） |",
+            f"| 结果刷新率 | {refresh_fps:.2f} fps（服务端上限≈{server_cap:.2f} fps） |",
+            f"| 请求超时（**不计入**延迟样本） | {st.timeouts} |",
             f"| 显示帧率 | {display_fps:.2f} fps |",
             f"| 延迟 均值/P50/P95 | {st.mean:.0f} / {st.pct(50):.0f} / {st.pct(95):.0f} ms |",
             f"| overlay 非空（有分割结果） | {st.overlay_nonempty} |",
@@ -1870,8 +1937,8 @@ class LiveRunner:
         for name, detail, ok in checks:
             mc.log(f"  [{'PASS' if ok else 'FAIL'}] {name} —— {detail}")
         mc.log(f"  采集 {self.frames_read} 帧，提交 {st.submitted}（发送 {st.sent} / 丢 {st.dropped}），"
-               f"提交 {submit_fps:.2f} fps、刷新 {send_fps:.2f} fps（上限≈{server_cap:.2f}），"
-               f"延迟 均值 {st.mean:.0f}ms / P95 {st.pct(95):.0f}ms")
+               f"提交 {submit_fps:.2f} fps、刷新 {refresh_fps:.2f} fps（上限≈{server_cap:.2f}），"
+               f"延迟 均值 {st.mean:.0f}ms / P95 {st.pct(95):.0f}ms，超时 {st.timeouts} 次")
         mc.log(f"  画面：overlay 非空 {st.overlay_nonempty} / 坏帧 {st.bad_frame} / "
                f"错误 {st.http_err + st.biz_err}")
         mc.log(f"  报告：{report_path}")
@@ -2080,6 +2147,9 @@ def parse_args(argv=None):
     p.add_argument("--session", default="", help="指定 session_id（默认自动生成）")
     p.add_argument("--doctor", default="live", help="医生编号（用于生成 session_id）")
     p.add_argument("--timeout", type=float, default=mc.TIMEOUT, help="单请求超时（秒）")
+    p.add_argument("--first-timeout", type=float, default=FIRST_TIMEOUT_DEFAULT,
+                   help="首帧长超时上限（秒，默认 120）：真引擎首次推理要冷启动，"
+                        "首帧超时且服务端在应答时用它重试一次；0=不启用")
     p.add_argument("--out", default="", help="输出目录（默认 runs/live/<时间戳>）")
     p.add_argument("--probe", action="store_true", help="只探测摄像头设备后退出")
     p.add_argument("--mic", action="store_true",

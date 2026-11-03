@@ -97,7 +97,7 @@ def _load_versions() -> tuple[str, str]:
     软件版本的唯一来源是根目录 `VERSION`（与 `launcher.py --version` 一致）；
     契约版本取 `launcher.CONTRACT_VERSION`。任何一步失败都给兜底值，不为版本号崩界面。
     """
-    ver, contract = "0.2.2", "v1.0.6"
+    ver, contract = "0.2.3", "v1.0.6"
     try:                                        # 首选：和启动器保持同源
         import launcher as _launcher
         ver = getattr(_launcher, "VERSION", ver)
@@ -695,8 +695,11 @@ class Console:
             payload, elapsed, err = mc.post_audio(url, self.session_id,
                                                    wav.read_bytes(), wav_name, 20.0)
             if err:
-                # 设置目标走的就是 A2 请求，失败几乎都是"连不上/超时"，按 E1002 播报
-                self._log_line("[!!] " + ee.explain("E1002", f"设置目标失败：{err}"))
+                # 按**真实原因**分类播报（2026-11-03）：原来一律报 E1002「连不上服务端」——
+                # 超时(E1003)、服务端拒绝(E1101)、服务端内部错(E1500) 全被说成"连不上"，
+                # 排查方向会被带偏。现在按错误串里的契约码 / 关键词翻译。
+                code = ee.code_from_error(err)
+                self._log_line("[!!] " + ee.explain(code, f"设置目标失败：{err}"))
                 self.var_msg.set(f"设置目标失败：{err}")
                 return
             text = (payload or {}).get("text")

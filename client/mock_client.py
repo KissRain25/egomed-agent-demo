@@ -153,13 +153,17 @@ def post_multipart(url: str, path: str, session_id: str, field: str,
 
     if resp.status_code != 200:
         msg = payload.get("message") if isinstance(payload, dict) else None
+        code = payload.get("code") if isinstance(payload, dict) else None
         # 503 + state=asr_warming：服务端明说"这一路还没热好"，属于**可等**状态。
         # 用固定前缀 "预热中" 让 set_target 能识别并等待重试，而不是当成故障跳过。
         if (resp.status_code == 503 and isinstance(payload, dict)
                 and payload.get("state") == "asr_warming"):
             retry = payload.get("retry_after_s", 10)
             return payload, elapsed, f"预热中（retry={retry}s）{msg or ''}".strip()
-        return payload, elapsed, f"HTTP {resp.status_code} {msg or ''}".strip()
+        # 带上**契约码**（1001 参数错 / 5000 内部错）→ 客户端据此翻译成"下一步该做什么"
+        # （见 egomed_errors.code_from_error；不带的话所有 HTTP 错误都只能报"连不上"）。
+        tag = f" [code={code}]" if code is not None else ""
+        return payload, elapsed, f"HTTP {resp.status_code}{tag} {msg or ''}".strip()
     return payload, elapsed, None
 
 
@@ -168,16 +172,33 @@ def post_frame(url: str, session_id: str, jpg: bytes, filename: str, timeout: fl
                           filename, jpg, "image/jpeg", timeout)
 
 
+def is_waitable(err) -> bool:
+    """这个错误是不是"等一等就好"（**不是**故障）。
+
+    ① `"预热中…"`：服务端明说 ASR 推理路径还没热好（契约 A.12，503 asr_warming）。
+    ② `"超时（>Ns）"`：**服务端还在算**。真引擎 ASR 冷启动实测首条要 88.9s
+       （外部进程抢显存时更久），而客户端稳态超时只有 15~30s →
+       客户端先放弃、服务端后算完 → 表现为"语音功能坏了"，其实是"慢了"。
+       这时**重试同一个 wav 是对的**：服务端那边算完就绪，再发同一条立刻返回。
+
+    2026-11-03 新增 ②：原先只对 ① 重试，② 直接判失败 —— 于是 ASR 冷启动
+    时 8 条语音**全部**判失败（服务端其实还在算）。
+    """
+    if not isinstance(err, str):
+        return False
+    return err.startswith("预热中") or err.startswith("超时")
+
+
 def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: float = TIMEOUT,
                wait_ready_s: float = 0.0):
     """发一条语音请求（A2）。
 
     `wait_ready_s`
     --------------
-    > 0 时启用「ASR 预热门控」等待：服务端在推理路径没热好时回
-    **503 + state=asr_warming**（契约 A.12），这不是故障而是"再等一会"。
-    这里按服务端给的 retry_after_s（默认 10s）节奏**重试同一个 wav**，
-    最多等 `wait_ready_s` 秒。
+    > 0 时启用「可等就等」等待：服务端在推理路径没热好时回
+    **503 + state=asr_warming**（契约 A.12），或**请求超时但服务端还在算**，
+    这两种都不是故障而是"再等一会"。这里按 10s 节奏**重试同一个 wav**，
+    最多等 `wait_ready_s` 秒（判据见 `is_waitable`）。
 
     2026-11-03 补齐：契约 A.12 的客户端约定此前**只覆盖了 set_target**，
     直接调 post_audio 的路径（验收用例 R2、直播 A2）撞上 503 会被当成故障判失败。
@@ -186,7 +207,7 @@ def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: fl
     """
     payload, elapsed, err = post_multipart(url, "/api/v1/audio", session_id, "audio",
                                            filename, wav, "audio/wav", timeout)
-    if not (wait_ready_s > 0 and isinstance(err, str) and err.startswith("预热中")):
+    if not (wait_ready_s > 0 and is_waitable(err)):
         return payload, elapsed, err
     waited = 0.0
     step = 10.0
@@ -196,7 +217,7 @@ def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: fl
         waited += step
         payload, elapsed, err = post_multipart(url, "/api/v1/audio", session_id, "audio",
                                                filename, wav, "audio/wav", timeout)
-        if not (isinstance(err, str) and err.startswith("预热中")):
+        if not is_waitable(err):
             break
     return payload, elapsed, err
 
@@ -239,11 +260,11 @@ def set_target(url: str, session_id: str, audio_dir: Path | None = None,
             log(f"  · 首次语音请求用长超时 {t:.0f}s（ASR 冷启动，后续按 {timeout:.0f}s）")
         payload, elapsed, err = post_audio(url, session_id, w.read_bytes(), w.name, t)
 
-        # 服务端回 503「ASR 推理预热中」：这是**可等**状态，不是故障 ——
+        # 服务端回 503「ASR 推理预热中」或**超时但服务端还在算**：这是**可等**状态，不是故障 ——
         # 等它热好再打同一个 wav（换 wav 没意义，瓶颈在推理初始化不在音频内容）
         waited = 0.0
         step = 10.0
-        while isinstance(err, str) and err.startswith("预热中") and waited < wait_ready_s:
+        while is_waitable(err) and waited < wait_ready_s:
             if verbose:
                 log(f"  · 服务端{err}；{step:.0f}s 后重试"
                     f"（已等 {waited:.0f}s / 上限 {wait_ready_s:.0f}s）")
