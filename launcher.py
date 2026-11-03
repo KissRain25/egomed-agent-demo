@@ -46,7 +46,9 @@ from pathlib import Path
 # ---------------------------------------------------------------- 常量
 
 FALLBACK_VERSION = "0.2.0"      # VERSION 文件缺失时的兜底，正常不该走到
-CONTRACT_VERSION = "v1.0.3"
+# 2026-11-03：随 A.12（A2 预热门控 asr_warming）升到 v1.0.4。
+# 此前变更记录已写 v1.0.4、但常量没跟，导致诊断包 versions.json 报旧契约版本。
+CONTRACT_VERSION = "v1.0.4"
 
 
 def read_version() -> str:

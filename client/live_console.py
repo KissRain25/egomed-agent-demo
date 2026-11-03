@@ -97,7 +97,7 @@ def _load_versions() -> tuple[str, str]:
     软件版本的唯一来源是根目录 `VERSION`（与 `launcher.py --version` 一致）；
     契约版本取 `launcher.CONTRACT_VERSION`。任何一步失败都给兜底值，不为版本号崩界面。
     """
-    ver, contract = "0.2.0", "v1.0.3"
+    ver, contract = "0.2.0", "v1.0.4"
     try:                                        # 首选：和启动器保持同源
         import launcher as _launcher
         ver = getattr(_launcher, "VERSION", ver)
