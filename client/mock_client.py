@@ -168,9 +168,37 @@ def post_frame(url: str, session_id: str, jpg: bytes, filename: str, timeout: fl
                           filename, jpg, "image/jpeg", timeout)
 
 
-def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: float = TIMEOUT):
-    return post_multipart(url, "/api/v1/audio", session_id, "audio",
-                          filename, wav, "audio/wav", timeout)
+def post_audio(url: str, session_id: str, wav: bytes, filename: str, timeout: float = TIMEOUT,
+               wait_ready_s: float = 0.0):
+    """发一条语音请求（A2）。
+
+    `wait_ready_s`
+    --------------
+    > 0 时启用「ASR 预热门控」等待：服务端在推理路径没热好时回
+    **503 + state=asr_warming**（契约 A.12），这不是故障而是"再等一会"。
+    这里按服务端给的 retry_after_s（默认 10s）节奏**重试同一个 wav**，
+    最多等 `wait_ready_s` 秒。
+
+    2026-11-03 补齐：契约 A.12 的客户端约定此前**只覆盖了 set_target**，
+    直接调 post_audio 的路径（验收用例 R2、直播 A2）撞上 503 会被当成故障判失败。
+    注意：返回的 elapsed 是**最后一次请求**的耗时（不含等待时间），
+    这样"语音耗时预算"衡量的仍是 ASR 就绪后的稳态延迟。
+    """
+    payload, elapsed, err = post_multipart(url, "/api/v1/audio", session_id, "audio",
+                                           filename, wav, "audio/wav", timeout)
+    if not (wait_ready_s > 0 and isinstance(err, str) and err.startswith("预热中")):
+        return payload, elapsed, err
+    waited = 0.0
+    step = 10.0
+    while waited < wait_ready_s:
+        log(f"  · 服务端{err}；{step:.0f}s 后重试（已等 {waited:.0f}s / 上限 {wait_ready_s:.0f}s）")
+        time.sleep(step)
+        waited += step
+        payload, elapsed, err = post_multipart(url, "/api/v1/audio", session_id, "audio",
+                                               filename, wav, "audio/wav", timeout)
+        if not (isinstance(err, str) and err.startswith("预热中")):
+            break
+    return payload, elapsed, err
 
 
 # ---------------------------------------------------------------- 结果保存

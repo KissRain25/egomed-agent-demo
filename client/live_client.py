@@ -54,6 +54,12 @@ DEFAULT_OUT = PROJECT_ROOT / "runs" / "live"
 SAMPLE_EVERY = 10            # 每发送 N 帧落盘一组抽样帧（原帧 + 渲染帧）
 LAT_SAMPLES = 500            # 延迟样本上限
 
+# 2026-11-03：ASR 预热门控的等待上限（契约 A.12）。
+# 服务端在推理路径没热好时回 503 + state=asr_warming（"可等"，不是故障）——
+# 直播链路此前直接把它当失败，医生第一句话就被丢掉；现在按服务端给的
+# retry_after_s 节奏重试同一个 wav（与 set_target 的既有行为一致）。
+A2_WAIT_READY_S = 120.0
+
 _FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msyh.ttc",     # 微软雅黑
     r"C:\Windows\Fonts\simhei.ttf",   # 黑体
@@ -1383,7 +1389,8 @@ def vad_selftest(wav_path: str, threshold: float | None = 0.005, url: str = "",
         return 1
     if send and url:
         sid = mc.make_session_id("vad")
-        payload, ms, err = mc.post_audio(url, sid, segs[0], "vad_seg.wav", 30.0)
+        payload, ms, err = mc.post_audio(url, sid, segs[0], "vad_seg.wav", 30.0,
+                                         wait_ready_s=A2_WAIT_READY_S)
         if err:
             mc.log(f"  发 A2 失败：{err}")
             return 1
@@ -1594,7 +1601,7 @@ class LiveRunner:
             return False
         payload, elapsed, err = mc.post_audio(
             self.args.url, self.session_id, wav_path.read_bytes(), wav_path.name,
-            self.args.timeout)
+            self.args.timeout, wait_ready_s=A2_WAIT_READY_S)
         return self._apply_a2_payload(payload, elapsed, f"预录 {wav_path.name}", err)
 
     # ---------------------------------------------------------------- 实时语音（麦克风）
@@ -1614,7 +1621,8 @@ class LiveRunner:
     def _send_voice(self, wav: bytes, dur: float, wav_path) -> None:
         payload, elapsed, err = mc.post_audio(
             self.args.url, self.session_id, wav,
-            wav_path.name if wav_path else "voice.wav", self.args.timeout)
+            wav_path.name if wav_path else "voice.wav", self.args.timeout,
+            wait_ready_s=A2_WAIT_READY_S)
         label = f"实时语音 {dur:.2f}s" + (f"（{wav_path.name}）" if wav_path else "")
         got_target = self._apply_a2_payload(payload, elapsed, label, err)
         # N37 第三道门槛（业务层）：识别不可靠的语音**不当成有效指令**

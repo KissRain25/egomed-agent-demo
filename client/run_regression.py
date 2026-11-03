@@ -37,6 +37,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SERVER_SCRIPT = PROJECT_ROOT / "server" / "api.py"
 ACC_SCRIPT = PROJECT_ROOT / "client" / "acceptance_test.py"
+CONTRACT_SCRIPT = PROJECT_ROOT / "client" / "test_server_contract.py"
+CONTRACT_ROOT = PROJECT_ROOT / "runs" / "contract"
 ACC_ROOT = PROJECT_ROOT / "runs" / "acceptance"
 REG_ROOT = PROJECT_ROOT / "runs" / "regression"
 
@@ -155,6 +157,28 @@ def run_suite(suite: str, url: str, args) -> tuple[bool, Path | None, str]:
     return (rc == 0, None, f"exit={rc}")
 
 
+def run_contract(url: str) -> tuple[bool, Path | None, str]:
+    """跑服务端契约一致性检查（复用当前已起的服务端，不额外起进程）。
+
+    2026-11-03 新增：验收套件只覆盖「正常帧 / 坏帧 / 语音」三条路，
+    1001 / 2001 / 5000 / 503 这些错误分支此前**零覆盖** ——
+    契约写没写、代码实现成什么样全靠人读代码。契约检查把它们固化成护栏。
+    """
+    before = set(CONTRACT_ROOT.iterdir()) if CONTRACT_ROOT.exists() else set()
+    log("")
+    log("  ┌─ 套件 [contract] " + "─" * 47)
+    cmd = [sys.executable, str(CONTRACT_SCRIPT), "--url", url]
+    rc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env()).returncode
+    log("  └─ " + "─" * 60)
+    new_dirs = [p for p in sorted(CONTRACT_ROOT.iterdir())
+                 if p.is_dir() and p not in before] if CONTRACT_ROOT.exists() else []
+    if new_dirs:
+        rep_dir = new_dirs[-1]
+        result, ok, total = read_report(rep_dir)
+        return (rc == 0, rep_dir, f"{ok}/{total} PASS" if total else result)
+    return (rc == 0, None, f"exit={rc}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="EgoMed-Agent 一键回归（mock + real 两套验收）")
     ap.add_argument("--suite", choices=["mock", "real", "all"], default="all",
@@ -166,6 +190,8 @@ def main() -> int:
     ap.add_argument("--seg-frames", type=int, default=12, help="R4 连续发帧数")
     ap.add_argument("--no-start", action="store_true", help="服务端已手动起好，不自动起/关")
     ap.add_argument("--keep-server", action="store_true", help="跑完不关服务端")
+    ap.add_argument("--skip-contract", action="store_true",
+                    help="跳过服务端契约一致性检查（mock 套件后自动跑，12 个错误分支用例）")
     args = ap.parse_args()
 
     url = args.url or f"http://127.0.0.1:{args.port}"
@@ -217,6 +243,11 @@ def main() -> int:
                         continue
             ok, rep_dir, summary = run_suite(s, url, args)
             results.append((s, ok, rep_dir, summary))
+            # 契约一致性检查：放在 mock 套件之后、关服务端之前 ——
+            # 复用同一个（假实现）服务端，不额外起进程；错误分支 12 个用例全是秒级。
+            if s == "mock" and not args.skip_contract:
+                ok_c, dir_c, sum_c = run_contract(url)
+                results.append(("contract", ok_c, dir_c, sum_c))
             if started is not None and not args.keep_server:
                 stop_server(started)
                 started = None

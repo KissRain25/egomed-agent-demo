@@ -78,6 +78,13 @@ STRICT_TEXT_CASES = {"cmd_03.wav"}
 AUDIO_ELAPSED_BUDGET_MS = 1500.0   # A.11 验收：elapsed < 1500 ms
 FRAMES_OK_COUNT = 3                # C1 正常帧数量
 
+# 2026-11-03：真引擎下 ASR 推理路径可能还没热好，服务端按契约 A.12 回
+# 503 + state=asr_warming（"可重试"，不是故障）。此前 R2 直接调 post_audio、
+# 没有等待逻辑，撞上就会判失败；现在按服务端给的节奏重试同一个 wav。
+# 预算仍按**最后一次请求**的耗时判定（AUDIO_ELAPSED_BUDGET_MS），
+# 等待时间不计入 —— 免得把"冷启动等待"误判成"语音识别慢"。
+AUDIO_WAIT_READY_S = 180.0
+
 
 # ---------------------------------------------------------------- 结果收集
 class Report:
@@ -209,7 +216,8 @@ def run_real_suite(args, rep: Report, session: str) -> None:
             continue
         try:
             payload, ms, err = mc.post_audio(args.url, audio_session,
-                                             path.read_bytes(), fname, args.timeout)
+                                             path.read_bytes(), fname, args.timeout,
+                                             wait_ready_s=AUDIO_WAIT_READY_S)
         except Exception as exc:
             rep.add("R2", fname, False, f"异常：{exc}")
             continue

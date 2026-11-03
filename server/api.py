@@ -27,9 +27,11 @@ import argparse
 import base64
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +56,37 @@ AUDIO_ENDPOINT = "/api/v1/audio"
 # N13（方案 B）改为**只对最新帧推理**：窗口=1，计算量恒定、不随会话劣化；
 # 代价是失去跨帧传播（每帧独立分割，静态屏幕场景无影响；画面快速移动时掩膜可能抖动）。
 WINDOW_SIZE = 1
+
+# ---------------------------------------------------------------------------
+# 请求规格上限（契约第二节：请求图 ≤300KB、请求音频 ≤200KB）
+# ---------------------------------------------------------------------------
+# 客户端（client/mock_client.py）已保证帧 ≤300KB、音频 ≤200KB。
+# 服务端这里设**宽松的硬上限**（2MB）：既能挡住异常/恶意大包把内存打爆，
+# 又不会因为客户端多压缩了 10KB 就把正常请求拒掉。超限按 1001（参数错）返回。
+MAX_FRAME_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_AUDIO_UPLOAD_BYTES = 2 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# 落盘文件保留上限（2026-11-03：修「磁盘无界增长」）
+# ---------------------------------------------------------------------------
+# 背景：真引擎每处理一帧就往 runs/stream/<session>/seg/{overlay,masks}/ 各写一个文件，
+# 每条 A2 语音写一个 wav，**从不清理** —— 实测一次 60 分钟长稳后
+# runs/stream 累积 31893 个文件 / 212.6 MB，多场长稳线性叠加。
+# 现在统一按"只留最近 N 个"裁剪，单会话磁盘占用有界。
+KEEP_OVERLAY_FILES = 5      # seg/overlay 保留最近 5 张
+KEEP_MASK_FILES = 5         # seg/masks 保留最近 5 张
+KEEP_AUDIO_FILES = 3        # audio 保留最近 3 段录音
+KEEP_LOG_BYTES = 10 * 1024 * 1024    # server_log.txt 单文件上限，超过滚动（保留 3 份历史）
+KEEP_LOG_BACKUPS = 3
+
+# ---------------------------------------------------------------------------
+# 帧处理等待超时（2026-11-03：cv.wait() 原来无超时）
+# ---------------------------------------------------------------------------
+# 原来 worker 卡死（GPU hang / 引擎异常）时，同会话的其它请求在 cv.wait() 上
+# **无限期**阻塞 —— 客户端只会看到"超时/连不上"，服务端线程却永久挂住。
+# 现在：单次等待有超时，累计超过上限就抛错（走 500/5000），让现场能看见。
+FRAME_WAIT_POLL_S = 5.0         # cv.wait 单次轮询间隔
+FRAME_WAIT_MAX_S = 120.0        # 同会话单帧累计等待上限，超过 → 500
 
 # ---------------------------------------------------------------------------
 # N18（2026-09-28）：误检面积过滤阈值按模态区分
@@ -83,8 +116,8 @@ WARMUP_MODALITIES = ("ACDC (MRI 心脏)",)
 # 错误码（契约第六节）
 E_PARAM = 1001        # 参数缺失或格式错误
 E_NO_SESSION = 1002   # session 不存在或已过期
-E_FRAME_BAD = 2001    # 画面不可用（模糊 / 过暗 / 无有效内容）
-E_MODALITY = 2002     # 未识别出模态
+E_FRAME_BAD = 2001    # 画面不可用（模糊 / 过暗 / 无有效内容）—— 仅作诊断位，**不进响应 JSON**
+E_MODALITY = 2002     # 未识别出模态 —— 同上，仅作诊断位
 E_CONFIRM = 2003      # 目标无法确定（需澄清）
 E_INTERNAL = 5000     # 服务器内部错误
 
@@ -92,8 +125,19 @@ E_INTERNAL = 5000     # 服务器内部错误
 REAL_ENGINE = os.environ.get("EGOMED_REAL_ENGINE", "0") == "1"
 
 # T2：--real 预热期间 state=warming（提前监听，/healthz 返回 503 + state，客户端据此显示"预热中"）。
-# 假实现无预热，直接就绪。预热结束（无论成败）都会置回 ready。
+# 假实现无预热，直接就绪。
+#
+# 2026-11-03 修正：原实现在预热**失败**时也在 finally 里置 ready，导致 /healthz 报 200
+# 而引擎根本没加载 —— 故障被推迟到第一个请求变成 500，现场只能看到"发帧就 500"。
+# 现改为三态：warming（预热中）/ ready（就绪）/ failed（预热失败）。
+# failed 时 /healthz 返 503 + state=failed，A2 直接返 500/5000，不再让请求空等。
 _SERVER_STATE = "ready"
+_WARMUP_ERROR = ""            # 预热失败原因（state=failed 时给客户端/日志看）
+
+# 契约 A1 边界 1 的统一文案（决议 #15）。
+# 边界 1 = "画面不可用 / 未识别出模态"：一律 status:"ok" + modality/target/overlay 全空
+# + 这句话；诊断码 2001/2002 只进日志，**不出现在响应 JSON**（决议 #13）。
+BOUNDARY1_MESSAGE = "画面里没检测到目标，请对准屏幕"
 
 
 # ---------------------------------------------------------------------------
@@ -130,13 +174,23 @@ class Session:
         """
         cv = self._frame_cv
         wait_t0 = time.perf_counter()      # T9：本请求"进会话→出结果"的总计时起点
+        waited_s = 0.0                     # 累计等待时长（用于超时保护）
         with cv:
             self._latest_seq += 1
             self._latest_frame = frame
             cv.notify_all()
             while True:
                 if self._working:
-                    cv.wait()
+                    # 2026-11-03：原来是无超时的 cv.wait() —— worker 卡死
+                    # （GPU hang / 引擎异常）会让本会话的其它请求**永久阻塞**，
+                    # 客户端只看到"超时"，服务端线程却挂死不放。
+                    # 现在带超时轮询，累计超 FRAME_WAIT_MAX_S 直接抛错（走 500/5000）。
+                    cv.wait(timeout=FRAME_WAIT_POLL_S)
+                    waited_s += FRAME_WAIT_POLL_S
+                    if waited_s >= FRAME_WAIT_MAX_S:
+                        raise TimeoutError(
+                            f"等待同会话上一帧完成超时（>{FRAME_WAIT_MAX_S:.0f}s，"
+                            f"疑似推理线程卡死）")
                     continue
                 if self._latest_seq <= self._done_seq:
                     # 已有更新帧被处理完，本帧被覆盖丢弃：返回最新结果并标记 dropped（T9）
@@ -172,22 +226,48 @@ class Session:
 
 
 _SESSIONS: dict[str, Session] = {}
+# 2026-11-03：会话字典加锁。
+# 原来 _cleanup_expired 在遍历 _SESSIONS 的同时，另一个请求可能正在
+# _get_session 里插入新键 → CPython 抛 "RuntimeError: dictionary changed size
+# during iteration"，而它发生在 async handler 里 → 直接变成 500。
+_SESSIONS_LOCK = threading.Lock()
 
 
 def _get_session(session_id: str) -> Session:
     """按 session_id 取会话，不存在则新建（契约：客户端生成 id，服务器不管理创建）。"""
-    s = _SESSIONS.get(session_id)
-    if s is None:
-        s = _SESSIONS[session_id] = Session(session_id)
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.get(session_id)
+        if s is None:
+            s = _SESSIONS[session_id] = Session(session_id)
     s.touch()
     return s
 
 
-def _cleanup_expired(now: float) -> None:
-    """清理超过 30 分钟无请求的会话（契约 5.1）。"""
-    stale = [k for k, s in _SESSIONS.items() if now - s.last_update > SESSION_TTL_SECONDS]
-    for k in stale:
-        _SESSIONS.pop(k, None)
+def _cleanup_expired(now: float) -> list[str]:
+    """清理超过 30 分钟无请求的会话（契约 5.1），返回被清理的 session_id 列表。
+
+    2026-11-03：原来只删内存字典、**不删磁盘目录** → runs/stream/<session>/
+    永远留在盘上（实测累积 31893 文件 / 212.6 MB）。现在把磁盘清理交给调用方
+    放到后台线程做（rmtree 是慢操作，不能阻塞事件循环）。
+    """
+    with _SESSIONS_LOCK:
+        stale = [k for k, s in _SESSIONS.items()
+                 if now - s.last_update > SESSION_TTL_SECONDS]
+        for k in stale:
+            _SESSIONS.pop(k, None)
+    return stale
+
+
+def _purge_session_dirs(session_ids: list[str]) -> None:
+    """删除过期会话的落盘目录（runs/stream/<session_id>/）。后台线程调用。"""
+    for sid in session_ids:
+        d = STREAM_DIR / sid
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 ← SystemExit 也要接住
+            _log.warning("清理会话目录失败（忽略）：%s（%s）", d, exc)
+            continue
+        _log.info("已清理过期会话目录：%s", d)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +278,11 @@ def _setup_logger() -> logging.Logger:
     logger = logging.getLogger("egomed.server")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
-        fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        # 2026-11-03：改为滚动写。契约 5.6 要求"每帧一行"，长稳 60 分钟就有
+        # 6600+ 行；原来是无 rotation 的 FileHandler → server_log.txt 无限增长
+        # （实测已 5.8 MB，多轮长稳线性叠加）。
+        fh = RotatingFileHandler(LOG_FILE, maxBytes=KEEP_LOG_BYTES,
+                                 backupCount=KEEP_LOG_BACKUPS, encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
         logger.addHandler(fh)
     return logger
@@ -239,24 +323,35 @@ _ENGINE_MODULES = None     # (demo, parse_target, transcribe)
 _ENGINE_LOCK = threading.Lock()   # 仅用于保护引擎懒加载（请求串行已改为 per-session）
 _ASR_WARMUP = None         # asr_medical.warmup（A.11），未就绪时为 None
 _ASR_MODULE = None         # asr_medical 模块本身：用来查 is_ready()（推理路径预热状态）
+_ASR_FALLBACK = False      # True = 已回退到旧 asr_engine（旧引擎无"就绪"概念，保持旧行为）
 
 
 def _asr_ready() -> bool:
     """ASR 推理路径是否已经预热过（只有真引擎才需要关心）。
 
-    拿不到模块（假实现 / 回退到 asr_engine / 老版本没有 is_ready）时一律返回 True ——
-    宁可像以前那样慢，也不能因为查不到状态就把 A2 全挡了。
+    2026-11-03 修正（真缺陷）：原实现一律 fail-open（拿不到状态就返回 True），
+    结果 **A.12 的 503 门控形同虚设** —— 第一个 A2 请求在 `_ASR_MODULE` 还没赋值时
+    （预热线程尚未 import 完 asr_medical）就通过了检查，随后在 run_in_threadpool 里
+    阻塞等 `_ENGINE_LOCK`（预热完成才放行），实测表现为"首次语音卡 60~180 秒"，
+    而不是契约 A.12 设计的"立刻 503 + Retry-After: 10，客户端 10s 节奏重试"。
+
+    改为 **fail-closed**：查不到就绪状态就当没就绪，让 A2 走 503 门控。
+    唯一保留 True 的例外是**回退到旧 asr_engine**（`_ASR_FALLBACK`）——
+    旧引擎既没有 is_ready() 也没有 warmup()，谈不上"就绪"，此时保持旧行为
+    （A2 可用，只是首次慢），不能把它也堵死。
     """
+    if _ASR_FALLBACK:
+        return True
     mod = _ASR_MODULE
     if mod is None:
-        return True
+        return False
     fn = getattr(mod, "is_ready", None)
     if fn is None:
-        return True
+        return False
     try:
         return bool(fn())
     except Exception:  # noqa: BLE001
-        return True
+        return False
 
 
 def _get_engine():
@@ -266,7 +361,7 @@ def _get_engine():
     A.11：ASR 优先用优化版 asr_medical（接口与 asr_engine.transcribe 完全一致）；
     缺失时回退 asr_engine，保证启动不崩。
     """
-    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE
+    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE, _ASR_FALLBACK
     if _ENGINE_MODULES is not None:
         return _ENGINE_MODULES
     with _ENGINE_LOCK:
@@ -289,6 +384,10 @@ def _get_engine():
             from asr_engine import transcribe
             _asr_warmup = None
             _ASR_MODULE = None
+            # 回退路径：旧 asr_engine 没有 is_ready()/warmup()，就绪门控对它无意义，
+            # 标记成 fallback 以便 _asr_ready() 保持 True（不把 A2 堵死）。
+            _ASR_FALLBACK = True
+            print("[server]   asr_medical 不可用，回退 asr_engine（无预热门控）", flush=True)
         _ASR_WARMUP = _asr_warmup
         _ENGINE_MODULES = (demo, parse_target, transcribe)
         return _ENGINE_MODULES
@@ -304,8 +403,9 @@ def _warmup_real_engine() -> None:
 
     ASR 预热失败不阻塞启动：A2 已有优雅降级，仅首个 A2 请求会变慢。
     """
-    global _SERVER_STATE
+    global _SERVER_STATE, _WARMUP_ERROR
     t_start = time.perf_counter()
+    ok = True
     try:
         t0 = time.perf_counter()
         demo, _parse_target, _transcribe = _get_engine()
@@ -322,13 +422,20 @@ def _warmup_real_engine() -> None:
                 _ASR_WARMUP()
                 print(f"[server]         ASR 完成（{_ms(t2)}ms）", flush=True)
             except Exception as exc:  # noqa: BLE001
+                # A.12：ASR 预热失败**不算整体预热失败** —— asr_medical.warmup() 内部
+                # 失败也会置 _ASR_READY=True（避免 A2 永久 503），故这里只记日志。
                 print(f"[server]         ASR 预热失败（不影响启动，A2 首个请求会较慢）："
                       f"{exc}（{_ms(t2)}ms）", flush=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[server] 预热失败（服务仍监听，后续请求可能报错）：{exc}", flush=True)
+        ok = False
+        _WARMUP_ERROR = f"{type(exc).__name__}: {exc}"
+        print(f"[server] 预热失败（引擎未就绪，/healthz 将返回 503 + state=failed）："
+              f"{_WARMUP_ERROR}", flush=True)
     finally:
-        _SERVER_STATE = "ready"
-        print(f"[server] 预热结束，总耗时 {_ms(t_start)}ms。", flush=True)
+        # 2026-11-03 修正：原来无论成败都置 ready —— /healthz 报 200 而引擎没加载，
+        # 故障被推迟到第一个请求变成 500，现场只看到"发帧就 500"。
+        _SERVER_STATE = "ready" if ok else "failed"
+        print(f"[server] 预热结束（state={_SERVER_STATE}），总耗时 {_ms(t_start)}ms。", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +469,64 @@ def _prune_window(frame_dir: Path, keep: int) -> None:
             continue
 
 
+def _prune_files(directory: Path, keep: int,
+                 suffixes: tuple[str, ...] = (".jpg", ".png", ".jpeg", ".wav")) -> None:
+    """只保留目录下**最近 keep 个**文件（按修改时间），其余删掉。
+
+    2026-11-03（修「磁盘无界增长」）：真引擎每处理一帧就往
+    runs/stream/<session>/seg/{overlay,masks}/ 各写一个文件、每条语音写一个 wav，
+    **从不清理** —— 实测 60 分钟长稳后 runs/stream 累积 31893 个文件 / 212.6 MB，
+    多场长稳线性叠加，交付机磁盘被吃满。
+
+    删除同样必须容错（宿主「安全删除守卫」会抛 SystemExit，同 _prune_window）：
+    **删不掉就留着**，残留文件只是占点磁盘，不影响功能。
+    """
+    try:
+        files = [p for p in directory.iterdir()
+                 if p.is_file() and p.suffix.lower() in suffixes]
+    except (Exception, SystemExit) as exc:  # noqa: BLE001  目录不存在 / 守卫拦截
+        _log.debug("prune_files 跳过（%s）：%s", directory, exc)
+        return
+    if len(files) <= keep:
+        return
+    try:
+        files.sort(key=lambda p: p.stat().st_mtime)
+    except (Exception, SystemExit):  # noqa: BLE001  并发删除导致 stat 失败
+        return
+    for f in files[:-keep]:
+        try:
+            f.unlink(missing_ok=True)
+        except (Exception, SystemExit) as exc:  # noqa: BLE001  ← SystemExit 也要接住
+            if _PRUNE_FAIL_LOGGED[0] < 3:
+                _PRUNE_FAIL_LOGGED[0] += 1
+                _log.warning("prune 删除失败（忽略，第 %d 次）：%s（%s）",
+                             _PRUNE_FAIL_LOGGED[0], f.name, exc)
+            continue
+
+
 def _mk_base(session_id: str) -> dict:
     """frame 响应的公共字段（status/session_id/timestamp）。"""
     return {
         "status": "ok",
         "session_id": session_id,
         "timestamp": int(time.time() * 1000),
+    }
+
+
+def _boundary1_payload(session_id: str) -> dict:
+    """契约 A1 边界 1 的标准响应（画面不可用 / 未识别出模态）。
+
+    规则（契约 §4 A1 边界 1 + 决议 #13/#15）：
+    一律 `status:"ok"` + modality/target/overlay 全空 + 统一 message，
+    **诊断码 2001 / 2002 只进日志，不出现在响应 JSON**。
+    2026-11-03 修正：空文件上传原先返回 HTTP 400 + code 2001（违约，且客户端会
+    当成业务错误丢掉上一帧），现统一走边界 1。
+    """
+    return {
+        **_mk_base(session_id),
+        "modality": "", "target": "",
+        "overlay": "", "message": BOUNDARY1_MESSAGE,
+        "need_confirm": False, "candidates": [],
     }
 
 
@@ -403,7 +562,11 @@ def _encode_overlay(raw: bytes) -> bytes:
         ok, buf = cv2.imencode(
             ".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), OVERLAY_JPEG_QUALITY])
         return buf.tobytes() if ok else raw
-    except Exception:
+    except Exception as exc:
+        # 2026-11-03：原来这里静默回传原图（可能 >300KB / 长边 >1280，超契约规格），
+        # 且不留任何痕迹，事后无法判断"到底是哪一帧的图超了规格"。补一条日志。
+        _log.warning("overlay 压缩失败，回传原图（%d 字节，可能超契约规格）：%s",
+                     len(raw), exc)
         return raw
 
 
@@ -448,7 +611,10 @@ BAD_MEAN_MAX = 15.0        # 灰度均值低于此 → 黑图/过暗（归一化
 BAD_STD_MAX = 20.0         # 灰度标准差低于此 → 低对比（归一化后：坏帧 11.1 / 正常 ≥57.1）
 BAD_BLUR_LAPVAR = 120.0    # Laplacian 方差低于此 → 模糊（归一化后：坏帧 ≤18.8 / 正常 ≥463）
 BAD_NOISE_LAPVAR = 12000.0 # Laplacian 方差高于此 → 噪声（归一化后：正常 ≤1538 / 噪点样例 110k）
-BAD_FRAME_MESSAGE = "没看清屏幕上的影像，请对准屏幕再试一次"
+# 坏帧文案统一用契约 A1 边界 1 的措辞（决议 #15：统一为"画面里没检测到目标，请对准屏幕"）。
+# 2026-11-03 修正：原为旧文案「没看清屏幕上的影像，请对准屏幕再试一次」，
+# 与真引擎分支文案不一致，且不符契约决议 #15 的统一要求。
+BAD_FRAME_MESSAGE = BOUNDARY1_MESSAGE
 
 
 def _is_bad_frame(image_bytes: bytes):
@@ -606,6 +772,11 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
     overlay_path = Path(result["overlay_files"][-1])
     overlay_b64 = _overlay_b64(overlay_path.read_bytes())
     encode_ms = _ms(t_enc)
+    # 2026-11-03（修「磁盘无界增长」）：读完之后立刻裁剪 seg/ 下的落盘产物。
+    # 引擎每处理一帧就写 1 张 overlay + 1 张 mask，从不清理 —— 实测一次 60 分钟
+    # 长稳后 runs/stream 累积 31893 个文件 / 212.6 MB。现在只留最近几个。
+    _prune_files(out_dir / "overlay", KEEP_OVERLAY_FILES)
+    _prune_files(out_dir / "masks", KEEP_MASK_FILES)
     return {
         **_mk_base(session_id),
         "modality": modality, "target": target,
@@ -638,16 +809,22 @@ def _handle_audio_real(session_id: str, audio_bytes: bytes, session: Session) ->
     adir.mkdir(parents=True, exist_ok=True)
     wav_path = adir / f"audio_{int(time.time() * 1000)}.wav"
     wav_path.write_bytes(audio_bytes)
+    # 2026-11-03（修「磁盘无界增长」）：每条语音都落一个 wav，从不清理 →
+    # 只留最近 KEEP_AUDIO_FILES 段（ASR 只需要当前这一段）。
+    _prune_files(adir, KEEP_AUDIO_FILES, suffixes=(".wav",))
     timing = {"audio": wav_path.name, "read_ms": _ms(t_read), "asr_ms": 0, "nlu_ms": 0}
 
     t_asr = time.perf_counter()
     try:
         text = transcribe(str(wav_path))
     except Exception as exc:
+        # 2026-11-03 修正（真缺陷）：原先把 ASR 异常吞成 HTTP 200 + status:"ok"
+        # （客户端会当成"识别成功但没听清"），还把异常原文回给客户端。
+        # 契约 §6：服务器内部错误 → status:"error" + code 5000 + HTTP 500。
+        # 这里改为向上抛，由 post_audio 统一转成 500/5000。
         timing["asr_ms"] = _ms(t_asr)
-        return _audio_payload(
-            session_id, "", "", "", False, [],
-            f"语音识别不可用（缺少 faster-whisper？）：{exc}", timing)
+        _log.exception("session=%s | ASR 转写失败：%s", session_id, exc)
+        raise
     timing["asr_ms"] = _ms(t_asr)
 
     if not text:
@@ -701,7 +878,7 @@ def handle_audio(session_id: str, audio_bytes: bytes, session: Session) -> dict:
 # ---------------------------------------------------------------------------
 # FastAPI 应用
 # ---------------------------------------------------------------------------
-app = FastAPI(title="EgoMed-Agent Server", version="0.2")
+app = FastAPI(title="EgoMed-Agent Server", version="1.0.4")
 
 
 @app.post(FRAME_ENDPOINT)
@@ -710,7 +887,11 @@ async def post_frame(
     timestamp: Optional[str] = Form(None),  # 契约 §4：Unix 毫秒整数，必填（P2.9）
     image: Optional[UploadFile] = File(None),
 ):
-    _cleanup_expired(time.time())
+    stale = _cleanup_expired(time.time())
+    if stale:
+        # 2026-11-03：过期会话的落盘目录一并清掉（原来只删内存字典）。
+        # rmtree 是慢操作 → 放后台线程，不阻塞事件循环。
+        threading.Thread(target=_purge_session_dirs, args=(stale,), daemon=True).start()
     if not session_id:
         return _error(E_PARAM, "缺少 session_id")
     _ts, ts_err = _parse_timestamp(timestamp)   # P2.9：缺失/非整数 → 1001
@@ -718,12 +899,27 @@ async def post_frame(
         return _error(E_PARAM, ts_err)
     if image is None:
         return _error(E_PARAM, "缺少 image 文件")
+    # 2026-11-03：上传体积上限。契约 §2 规定请求图 ≤300KB（客户端已保证），
+    # 这里设宽松硬上限 2MB —— 挡住异常大包把内存打爆，又不会误伤正常帧。
+    if getattr(image, "size", None) and image.size > MAX_FRAME_UPLOAD_BYTES:
+        _log.warning("session=%s | 上传画面超限：%d 字节 > %d",
+                     session_id, image.size, MAX_FRAME_UPLOAD_BYTES)
+        return _error(E_PARAM, f"画面过大（{image.size // 1024} KB），"
+                               f"上限 {MAX_FRAME_UPLOAD_BYTES // 1024} KB")
     try:
         image_bytes = await image.read()
     except Exception as exc:
-        return _error(E_INTERNAL, f"读取图片失败：{exc}", 500)
+        _log.exception("session=%s | 读取图片失败：%s", session_id, exc)
+        return _error(E_INTERNAL, "读取图片失败，请查看服务端日志", 500)
+    if len(image_bytes) > MAX_FRAME_UPLOAD_BYTES:
+        return _error(E_PARAM, f"画面过大（{len(image_bytes) // 1024} KB），"
+                               f"上限 {MAX_FRAME_UPLOAD_BYTES // 1024} KB")
     if not image_bytes:
-        return _error(E_FRAME_BAD, "画面不可用，请对准屏幕")
+        # 空文件 = 画面不可用 → 契约 A1 边界 1（status:"ok" + 空字段 + 统一 message）。
+        # 2026-11-03 修正：原先返回 HTTP 400 + code 2001，违反决议 #13
+        # （"2001 仅作诊断位，响应 JSON 不出现"），且客户端会当业务错误丢掉上一帧回显。
+        _log.info("session=%s | frame=empty | 边界1（空文件，2001 仅作诊断位）", session_id)
+        return JSONResponse(_boundary1_payload(session_id))
 
     s = _get_session(session_id)
     # P2.12：计数改到"真正处理完该帧"的位置（真引擎在 _handle_frame_real 内、
@@ -732,8 +928,11 @@ async def post_frame(
     try:
         payload = await run_in_threadpool(handle_frame, session_id, image_bytes, s)
     except Exception as exc:
-        _log_frame(session_id, s.frames_processed, "", "", 0, f"error:{exc}")
-        return _error(E_INTERNAL, f"服务器内部错误：{exc}", 500)
+        # 500 的 message 不再把异常原文回给客户端（内部路径/栈信息不该外泄），
+        # 完整 traceback 进服务端日志，客户端只拿到可读的一句话（契约 §6 5000）。
+        _log.exception("session=%s | 帧处理异常：%s", session_id, exc)
+        _log_frame(session_id, s.frames_processed, "", "", 0, f"error:{type(exc).__name__}")
+        return _error(E_INTERNAL, f"服务器内部错误（{type(exc).__name__}），详见服务端日志", 500)
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     # T9：拆出分段耗时（wait/infer/encode），私有字段弹掉、不进响应
     wait_ms = payload.pop("_wait_ms", 0)
@@ -760,7 +959,9 @@ async def post_audio(
     timestamp: Optional[str] = Form(None),  # 契约 §4：Unix 毫秒整数，必填（P2.9）
     audio: Optional[UploadFile] = File(None),
 ):
-    _cleanup_expired(time.time())
+    stale = _cleanup_expired(time.time())
+    if stale:
+        threading.Thread(target=_purge_session_dirs, args=(stale,), daemon=True).start()
     if not session_id:
         return _error(E_PARAM, "缺少 session_id")
     _ts, ts_err = _parse_timestamp(timestamp)   # P2.9：缺失/非整数 → 1001
@@ -768,10 +969,20 @@ async def post_audio(
         return _error(E_PARAM, ts_err)
     if audio is None:
         return _error(E_PARAM, "缺少 audio 文件")
+    # 2026-11-03：上传体积上限（契约 §2：音频 ≤200KB、≤5 秒；这里硬上限 2MB）
+    if getattr(audio, "size", None) and audio.size > MAX_AUDIO_UPLOAD_BYTES:
+        _log.warning("session=%s | 上传音频超限：%d 字节 > %d",
+                     session_id, audio.size, MAX_AUDIO_UPLOAD_BYTES)
+        return _error(E_PARAM, f"音频过大（{audio.size // 1024} KB），"
+                               f"上限 {MAX_AUDIO_UPLOAD_BYTES // 1024} KB")
     try:
         audio_bytes = await audio.read()
     except Exception as exc:
-        return _error(E_INTERNAL, f"读取音频失败：{exc}", 500)
+        _log.exception("session=%s | 读取音频失败：%s", session_id, exc)
+        return _error(E_INTERNAL, "读取音频失败，请查看服务端日志", 500)
+    if len(audio_bytes) > MAX_AUDIO_UPLOAD_BYTES:
+        return _error(E_PARAM, f"音频过大（{len(audio_bytes) // 1024} KB），"
+                               f"上限 {MAX_AUDIO_UPLOAD_BYTES // 1024} KB")
 
     s = _get_session(session_id)
 
@@ -779,23 +990,35 @@ async def post_audio(
     # 背景：真引擎的"预热"只加载权重，首次 forward 才做 CUDA kernel 加载 / cuDNN
     # autotune，实测 >180s。让请求干等，客户端只会报"超时/连不上"，更误导人。
     # 这里回 503 + Retry-After：语义是"服务在，但这一路暂时没准备好"，可重试。
-    if REAL_ENGINE and not _asr_ready():
-        return JSONResponse(
-            status_code=503,
-            headers={"Retry-After": "10"},
-            content={
-                "status": "error",
-                "code": E_INTERNAL,
-                "message": "ASR 推理预热中（首次语音要初始化，约 10~60 秒），请稍后重试",
-                "state": "asr_warming",
-                "retry_after_s": 10,
-            })
+    #
+    # 2026-11-03 修正：原来只有 `not _asr_ready()` 一个条件，而 `_asr_ready()` 是
+    # fail-open 的 → 门控被架空，首次 A2 反而阻塞 60~180s。现改为按服务端状态三态判断：
+    #   failed  → 预热就失败了，不是"还没准备好" → 500（别让客户端无限重试）
+    #   warming → 还在预热 → 503 asr_warming（契约 A.12，可重试）
+    #   ready 但 ASR 未就绪 → 503 asr_warming（ASR prime 线程还在跑）
+    if REAL_ENGINE:
+        if _SERVER_STATE == "failed":
+            _log.error("session=%s | A2 拒绝：服务端预热失败（%s）", session_id, _WARMUP_ERROR)
+            return _error(E_INTERNAL,
+                          f"服务端预热失败（{_WARMUP_ERROR}），请查看服务端日志", 500)
+        if _SERVER_STATE == "warming" or not _asr_ready():
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "10"},
+                content={
+                    "status": "error",
+                    "code": E_INTERNAL,
+                    "message": "ASR 推理预热中（首次语音要初始化，约 10~60 秒），请稍后重试",
+                    "state": "asr_warming",
+                    "retry_after_s": 10,
+                })
 
     t0 = time.perf_counter()
     try:
         payload = await run_in_threadpool(handle_audio, session_id, audio_bytes, s)
     except Exception as exc:
-        return _error(E_INTERNAL, f"服务器内部错误：{exc}", 500)
+        _log.exception("session=%s | A2 处理异常：%s", session_id, exc)
+        return _error(E_INTERNAL, f"服务器内部错误（{type(exc).__name__}），详见服务端日志", 500)
     total_ms = _ms(t0)
     # T9：A2 分段耗时（read/asr/nlu），私有 _timing 弹掉、不进响应；
     # 假实现没有 asr/nlu 阶段，audio 名回退到客户端上传文件名。
@@ -837,8 +1060,11 @@ def _gpu_mem_mb():
 async def healthz():
     """健康检查（联调排障用，非契约接口）。
 
-    T2：增加 state（warming/ready），预热期返回 **503** 供客户端显示"预热中"；
+    T2：增加 state（warming/ready/failed），预热期返回 **503** 供客户端显示"预热中"；
     T10：增加 rss_mb（进程内存）与 gpu_mem_mb（显存），供 N24 长稳直接轮询。
+
+    2026-11-03：预热失败时（state=failed）也返回 503 —— 原来无论成败都置 ready，
+    /healthz 报 200 而引擎根本没加载，故障被推迟到第一个请求变成 500。
     """
     state = _SERVER_STATE
     body = {
@@ -849,7 +1075,9 @@ async def healthz():
         "rss_mb": _rss_mb(),
         "gpu_mem_mb": _gpu_mem_mb(),
     }
-    return JSONResponse(status_code=503 if state == "warming" else 200, content=body)
+    if state == "failed":
+        body["warmup_error"] = _WARMUP_ERROR
+    return JSONResponse(status_code=503 if state in ("warming", "failed") else 200, content=body)
 
 
 # ---------------------------------------------------------------------------
@@ -867,10 +1095,14 @@ def main() -> None:
                         help="启用真引擎（默认假实现）")
     args = parser.parse_args()
 
-    if args.real:
+    # T2：提前监听 + 后台预热。预热期 /healthz 返回 503 + state=warming，
+    # 客户端据此显示"预热中"，不再盲等 60~90 秒（方案 b）。
+    #
+    # 2026-11-03 修正：REAL_ENGINE 在**导入期**就读了环境变量 EGOMED_REAL_ENGINE，
+    # 但原来只有传 --real 才启动预热线程 → 用环境变量启用真引擎时**完全没有预热**，
+    # 首个 A1/A2 会撞模型冷加载（实测 >60s）。现在两种启用方式都启动预热。
+    if args.real or REAL_ENGINE:
         REAL_ENGINE = True
-        # T2：提前监听 + 后台预热。预热期 /healthz 返回 503 + state=warming，
-        # 客户端据此显示"预热中"，不再盲等 60~90 秒（方案 b）。
         _SERVER_STATE = "warming"
         threading.Thread(target=_warmup_real_engine, daemon=True).start()
         print("[server] 预热已在后台开始（/healthz 先返回 503 + state=warming）", flush=True)
