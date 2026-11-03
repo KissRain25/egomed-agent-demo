@@ -132,6 +132,68 @@ def gpu_proc_mb(pid: int) -> float | None:
         return None
 
 
+def _proc_name(pid: int) -> str:
+    """进程名（取不到就返回空串，不影响主流程）。"""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="ignore", timeout=10,
+        )
+        line = (out.stdout or "").strip().splitlines()
+        if not line:
+            return ""
+        return line[0].split(",")[0].strip().strip('"')
+    except Exception:
+        return ""
+
+
+def gpu_ext_probes(server_pid: int | None, min_mb: float = 200.0):
+    """占用显存的**外部进程**（非服务端）列表，按占用降序。
+
+    用途：长稳期间若有别的程序抢显存（游戏、浏览器、桌面特效等），
+    整卡显存会飙升、推理会变慢，报告里的「显存增长 / 超时 / P95 退化」
+    会被误判成服务端的问题。这里把「谁在抢」记下来，报告里自动标注，
+    避免下次再花半天做归因。
+
+    口径同 gpu_proc_mb：Windows 性能计数器（WDDM 下 nvidia-smi 取不到进程显存）。
+    """
+    try:
+        cmd = (
+            "(Get-Counter '\\GPU Process Memory(pid_*)\\Dedicated Usage').CounterSamples | "
+            "Group-Object { $_.InstanceName -replace '.*(pid_\\d+)_.*','$1' } | "
+            "ForEach-Object { [pscustomobject]@{ pid=$_.Name; "
+            "mb=[math]::Round((($_.Group | Measure-Object CookedValue -Sum).Sum)/1MB,1) } } | "
+            f"Where-Object {{ $_.mb -ge {min_mb} }} | Sort-Object mb -Descending | "
+            "ConvertTo-Json -Compress"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="ignore", timeout=30,
+        )
+        raw = (out.stdout or "").strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = [data]
+        probes = []
+        for item in data:
+            try:
+                pid_s = str(item.get("pid", ""))
+                pid_int = int(pid_s.replace("pid_", ""))
+                mb = float(item.get("mb", 0))
+            except (TypeError, ValueError):
+                continue
+            if pid_int == server_pid:
+                continue          # 服务端自己不算「外部」
+            probes.append({"pid": pid_int, "mb": mb, "name": _proc_name(pid_int)})
+        return probes
+    except Exception:
+        return []
+
+
 def rss_mb(pid: int) -> float | None:
     """进程常驻内存（MB）：优先 psutil，退回 tasklist。"""
     try:
@@ -340,6 +402,7 @@ def main() -> int:
                     "err": sum(1 for r in rows_b if r["err"]),
                     "gpu_mb": gpu_mem_mb(),
                     "gpu_proc_mb": gpu_proc_mb(server_pid) if server_pid else None,
+                    "ext_gpu": gpu_ext_probes(server_pid),
                     "rss_mb": rss_mb(server_pid) if server_pid else None,
                 }
                 buckets.append(b)
@@ -459,7 +522,27 @@ def _dump(out_dir: Path, args, url, target, rows, buckets, final) -> None:
                 f"| {b['bucket']} | {b['min']} | {b['n']} | {b['fps']} | "
                 f"{b['c_p50']:.0f}/{b['c_p95']:.0f} ms | {b['s_p50']:.0f}/{b['s_p95']:.0f} ms | "
                 f"{b['err']} | {b['rss_mb']} MB | {b['gpu_mb']} MB | "
-                f"{b.get('gpu_proc_mb', '—')} MB |")
+                f"{b.get('gpu_proc_mb') or '—'} MB |")
+
+        # 外部进程干扰标注：这些桶的「显存增长 / 超时 / P95 退化」多半不是服务端的锅
+        polluted = [(b, p) for b in buckets for p in (b.get("ext_gpu") or [])
+                    if p.get("mb", 0) >= 500]
+        if polluted:
+            lines += ["", "## ⚠ 外部进程干扰标注", "",
+                      "> 下列桶有**非服务端进程**占用 ≥500 MB 显存。"
+                      "这些桶出现的「显存增长 / 请求超时 / P95 退化」应归因于外部程序抢占"
+                      "（游戏、浏览器、桌面特效等），**不是服务端泄漏**。", "",
+                      "| 桶 | 分钟 | 外部进程 | PID | 占用 |",
+                      "|---:|---:|---|---:|---:|"]
+            seen = set()
+            for b, p in polluted:
+                key = (b["bucket"], p["pid"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(f"| {b['bucket']} | {b['min']} | {p.get('name') or '?'} | "
+                             f"{p['pid']} | {p['mb']} MB |")
+            lines.append("")
     (out_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
