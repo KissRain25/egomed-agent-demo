@@ -200,15 +200,19 @@ def run_checks(url: str, ck: Checker) -> None:
            f"HTTP {r.status_code} code={b.get('code')}（期望 400/1001）", ms)
 
     # K5 空文件 → 契约 A1 边界 1（status ok + 空字段 + 统一文案；响应不得出现 2001）
+    # 2026-11-03 补断言「11 个字段齐全」：这条分支在 post_frame 里提前 return，
+    # 曾经绕过统一补 elapsed_ms/frames_processed → 只给 9 个字段（实测才发现）。
     r, ms = post_frame_raw(url, sid, ts, ("empty.jpg", b"", "image/jpeg"))
     b = jbody(r)
+    missing5 = [f for f in A1_FIELDS if f not in b]
     ok5 = (r.status_code == 200 and b.get("status") == "ok"
            and b.get("modality") == "" and b.get("target") == "" and b.get("overlay") == ""
            and b.get("message") == BOUNDARY1_MESSAGE
+           and not missing5
            and "2001" not in json.dumps(b, ensure_ascii=False))
     ck.add("K5", "A1 空文件 → 边界 1", ok5,
            f"HTTP {r.status_code} status={b.get('status')} message={b.get('message')!r} "
-           f"（期望 200/ok/空字段/统一文案，且不含 2001）", ms)
+           f"缺字段={missing5 or '无'}（期望 200/ok/空字段/统一文案/11 字段齐全，且不含 2001）", ms)
 
     # K6 超大文件（>2MB 硬上限）
     r, ms = post_frame_raw(url, sid, ts, ("big.jpg", b"\x00" * (2 * 1024 * 1024 + 1024),

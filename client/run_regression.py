@@ -39,6 +39,8 @@ SERVER_SCRIPT = PROJECT_ROOT / "server" / "api.py"
 ACC_SCRIPT = PROJECT_ROOT / "client" / "acceptance_test.py"
 CONTRACT_SCRIPT = PROJECT_ROOT / "client" / "test_server_contract.py"
 CONTRACT_ROOT = PROJECT_ROOT / "runs" / "contract"
+FIELD_SCRIPT = PROJECT_ROOT / "client" / "test_field_alignment.py"
+FIELD_ROOT = PROJECT_ROOT / "runs" / "field_align"
 ACC_ROOT = PROJECT_ROOT / "runs" / "acceptance"
 REG_ROOT = PROJECT_ROOT / "runs" / "regression"
 
@@ -179,6 +181,28 @@ def run_contract(url: str) -> tuple[bool, Path | None, str]:
     return (rc == 0, None, f"exit={rc}")
 
 
+def run_field_align(url: str) -> tuple[bool, Path | None, str]:
+    """跑「服务端 ↔ 客户端 字段一致性」实测（复用当前已起的假实现服务端）。
+
+    2026-11-03 新增：起因是用户问「服务端和客户端字段一致吧」——
+    顺查真抓到一处不一致（空文件分支绕过统一补字段，只给 9 个字段，契约要求 11 个）。
+    契约字段清单从 API_CONTRACT.md 的 JSON 示例**解析**得到，不是硬编码 → 契约改了自动跟随。
+    """
+    before = set(FIELD_ROOT.iterdir()) if FIELD_ROOT.exists() else set()
+    log("")
+    log("  ┌─ 套件 [field-align] " + "─" * 43)
+    cmd = [sys.executable, str(FIELD_SCRIPT), "--url", url]
+    rc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=child_env()).returncode
+    log("  └─ " + "─" * 60)
+    new_dirs = [p for p in sorted(FIELD_ROOT.iterdir())
+                 if p.is_dir() and p not in before] if FIELD_ROOT.exists() else []
+    if new_dirs:
+        rep_dir = new_dirs[-1]
+        result, ok, total = read_report(rep_dir)
+        return (rc == 0, rep_dir, f"{ok}/{total} PASS" if total else result)
+    return (rc == 0, None, f"exit={rc}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="EgoMed-Agent 一键回归（mock + real 两套验收）")
     ap.add_argument("--suite", choices=["mock", "real", "all"], default="all",
@@ -248,6 +272,9 @@ def main() -> int:
             if s == "mock" and not args.skip_contract:
                 ok_c, dir_c, sum_c = run_contract(url)
                 results.append(("contract", ok_c, dir_c, sum_c))
+                # 字段一致性实测（假实现分支；真引擎分支用 --real 单独跑）
+                ok_f, dir_f, sum_f = run_field_align(url)
+                results.append(("field-align", ok_f, dir_f, sum_f))
             if started is not None and not args.keep_server:
                 stop_server(started)
                 started = None

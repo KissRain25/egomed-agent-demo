@@ -513,7 +513,7 @@ def _mk_base(session_id: str) -> dict:
     }
 
 
-def _boundary1_payload(session_id: str) -> dict:
+def _boundary1_payload(session_id: str, frames_processed: int = 0) -> dict:
     """契约 A1 边界 1 的标准响应（画面不可用 / 未识别出模态）。
 
     规则（契约 §4 A1 边界 1 + 决议 #13/#15）：
@@ -521,12 +521,18 @@ def _boundary1_payload(session_id: str) -> dict:
     **诊断码 2001 / 2002 只进日志，不出现在响应 JSON**。
     2026-11-03 修正：空文件上传原先返回 HTTP 400 + code 2001（违约，且客户端会
     当成业务错误丢掉上一帧），现统一走边界 1。
+
+    2026-11-03 再修正（字段对齐）：本函数被 post_frame **提前 return** 调用，
+    绕过了统一补 `elapsed_ms` / `frames_processed` 的那段 → 响应只有 9 个字段，
+    比契约 A1 的 11 个少 2 个（客户端虽不读，但契约示例与诊断工具都按 11 个字段）。
+    现补齐：`elapsed_ms=0`（本帧未跑推理）、`frames_processed` 取会话当前计数。
     """
     return {
         **_mk_base(session_id),
         "modality": "", "target": "",
         "overlay": "", "message": BOUNDARY1_MESSAGE,
         "need_confirm": False, "candidates": [],
+        "elapsed_ms": 0, "frames_processed": frames_processed,
     }
 
 
@@ -906,6 +912,9 @@ async def post_frame(
                      session_id, image.size, MAX_FRAME_UPLOAD_BYTES)
         return _error(E_PARAM, f"画面过大（{image.size // 1024} KB），"
                                f"上限 {MAX_FRAME_UPLOAD_BYTES // 1024} KB")
+    # 取会话放在读文件之前：空文件分支（边界 1）也要用 frames_processed 填字段，
+    # 且空帧说明会话已经开始，建会话记录是合理的（30 分钟 TTL 后自动回收）。
+    s = _get_session(session_id)
     try:
         image_bytes = await image.read()
     except Exception as exc:
@@ -919,9 +928,8 @@ async def post_frame(
         # 2026-11-03 修正：原先返回 HTTP 400 + code 2001，违反决议 #13
         # （"2001 仅作诊断位，响应 JSON 不出现"），且客户端会当业务错误丢掉上一帧回显。
         _log.info("session=%s | frame=empty | 边界1（空文件，2001 仅作诊断位）", session_id)
-        return JSONResponse(_boundary1_payload(session_id))
+        return JSONResponse(_boundary1_payload(session_id, s.frames_processed))
 
-    s = _get_session(session_id)
     # P2.12：计数改到"真正处理完该帧"的位置（真引擎在 _handle_frame_real 内、
     # 假实现无丢帧语义在 handle_frame 内自增），此处不再按"请求到达"累加。
     t0 = time.perf_counter()
