@@ -54,16 +54,21 @@ CONTRACT_VERSION = "v1.0.6"
 def read_version() -> str:
     """软件版本的**唯一来源**是根目录 `VERSION` 文件。
 
-    为什么不用常量硬编码：GUI「关于」、`--version`、诊断包清单三处都要显示版本，
+    这里为什么不用常量硬编码：GUI「关于」、`--version`、诊断包清单三处都要显示版本，
     硬编码必然漂移。读文件失败就回退，绝不因版本号读不到而启动失败。
+
+    **用 utf-8-sig 读**：Windows 的记事本 / PowerShell `Set-Content -Encoding UTF8`
+    会给文件加 BOM（实测 2026-11-04：用 PowerShell 改版本号后 `launcher.py --version`
+    输出成 `egomed ﻿0.2.3`，版本号里混进一个 U+FEFF，连便携包文件名都带上了它）。
+    `utf-8-sig` 兼容两种（有 BOM 无 BOM都能读），顺带把 BOM 剥掉。
     """
     here = Path(__file__).resolve().parent      # 不用 STAGE_DIR：它在下面才定义
     for cand in (here / "VERSION", here.parent / "VERSION"):
         try:
             if cand.is_file():
-                first = cand.read_text(encoding="utf-8").strip().splitlines()
+                first = cand.read_text(encoding="utf-8-sig").strip().splitlines()
                 if first and first[0].strip():
-                    return first[0].strip()
+                    return first[0].strip().lstrip("\ufeff").strip()
         except Exception:  # noqa: BLE001
             continue
     return FALLBACK_VERSION

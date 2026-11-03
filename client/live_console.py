@@ -106,9 +106,11 @@ def _load_versions() -> tuple[str, str]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        txt = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip().splitlines()
+        # utf-8-sig：Windows 记事本 / PowerShell 可能给 VERSION 加 BOM，
+        # 不剥掉会把版本号读成 "﻿0.2.3"（实测 2026-11-04，连便携包文件名都带上了它）
+        txt = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8-sig").strip().splitlines()
         if txt and txt[0].strip():
-            ver = txt[0].strip()
+            ver = txt[0].strip().lstrip("\ufeff").strip()
     except Exception:  # noqa: BLE001
         pass
     return ver, contract

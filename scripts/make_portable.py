@@ -129,9 +129,11 @@ def read_version() -> str:
     for cand in (PROJECT_ROOT / "VERSION",):
         try:
             if cand.is_file():
-                txt = cand.read_text(encoding="utf-8").strip().splitlines()
+                # utf-8-sig：剥掉 BOM（Windows 记事本 / PowerShell 会加），
+                # 否则便携包文件名会变成 "..._v﻿0.2.3_....zip"（实测踩过）
+                txt = cand.read_text(encoding="utf-8-sig").strip().splitlines()
                 if txt and txt[0].strip():
-                    return txt[0].strip()
+                    return txt[0].strip().lstrip("\ufeff").strip()
         except Exception:  # noqa: BLE001
             pass
     return "unknown"
