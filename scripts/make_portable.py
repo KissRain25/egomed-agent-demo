@@ -46,6 +46,31 @@ EXCLUDE_DIRS = {
     ".mypy_cache", ".pytest_cache", ".pytest_tmp",
 }
 EXCLUDE_SUFFIX = {".pyc", ".pyo", ".log", ".tmp", ".bak"}
+
+# ---------------------------------------------------------------------------
+# 权重白名单
+# ---------------------------------------------------------------------------
+# NOTE(2026-11-03)：旧实现只把 `checkpoints/` 与 `models/` 放行，漏掉了
+# `runs/yolo26_det/<模态>_yolo26m_imgsz1024/weights/best.pt` —— 而这 5 份
+# 各约 42 MB 的 YOLO 检测权重才是分割链路真正要用的（MODALITIES 里
+# yolo_weight 全指向这里）。漏了它，打出来的「完整版」便携包跑不了分割。
+# 这里改成按「文件级白名单」放行，避免为了权重把整个 runs/ 的产物都打进包。
+WEIGHT_SUFFIXES = {".pt", ".pth"}
+WEIGHT_DIRS = {"checkpoints", "models"}
+WEIGHT_RUNS_SUBDIR = "yolo26_det"
+
+
+def is_weight_file(rel: Path) -> bool:
+    """判断相对路径是否属于「必须随包发布的权重」。"""
+    if rel.suffix.lower() not in WEIGHT_SUFFIXES:
+        return False
+    parts = rel.parts
+    if parts and parts[0] in WEIGHT_DIRS:
+        return True
+    # runs/yolo26_det/<模态>_yolo26m_imgsz1024/weights/best.pt
+    if len(parts) >= 4 and parts[0] == "runs" and parts[1] == WEIGHT_RUNS_SUBDIR:
+        return "weights" in parts[2:-1]
+    return False
 # 打包时额外带上（放最前面，便于对方先看到）
 PRIORITY_FILES = ["VERSION", "config.toml", "egomed.bat", "requirements.txt",
                   "requirements-lock.txt", "README.md"]
@@ -66,7 +91,8 @@ PORTABLE_README = """# EgoMed-Agent 便携包（v{ver}）
 | 缺的东西 | 体积 | 怎么补 |
 |---|---|---|
 | Python 环境 | 约 9.6 GB（torch + CUDA） | 跑 `安装环境.bat`，或按 `requirements-lock.txt` 自建 conda 环境 `egomed`（Python 3.10+） |
-| 模型权重 | 约 370 MB | 把 `checkpoints/sam2.1_hiera_base_plus.pt` 与 `models/*.pt` 拷到同名目录 |
+| SAM2 / 分类器权重 | 约 370 MB | 把 `checkpoints/sam2.1_hiera_base_plus.pt` 与 `models/*.pt` 拷到同名目录 |
+| 5 模态 YOLO 检测权重 | 约 210 MB（5 × 42 MB） | 把 `runs/yolo26_det/<模态>_yolo26m_imgsz1024/weights/best.pt` 拷回同名目录 |
 | 数据 | 数 GB | 帧目录放到 `data/<模态>/img/<病例>/` 下 |
 {weights_line}
 ## 三步跑起来
@@ -122,12 +148,18 @@ def read_contract() -> str:
 
 def iter_files(with_weights: bool = False):
     skip = set(EXCLUDE_DIRS)
-    if with_weights:
-        skip -= {"checkpoints", "models"}
     for p in sorted(PROJECT_ROOT.rglob("*")):
         if not p.is_file():
             continue
         rel = p.relative_to(PROJECT_ROOT)
+
+        # 权重按白名单走：带了就放行（即使所在目录被排除），
+        # 不带就整类跳过，避免为了权重把 runs/ 下的产物一起打进去。
+        if is_weight_file(rel):
+            if with_weights:
+                yield p, rel
+            continue
+
         if any(part in skip for part in rel.parts[:-1]):
             continue
         if p.suffix.lower() in EXCLUDE_SUFFIX:
@@ -143,7 +175,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="EgoMed-Agent 便携包打包")
     ap.add_argument("--out", default=str(OUT_ROOT), help="输出目录（默认 runs/portable）")
     ap.add_argument("--with-weights", action="store_true",
-                    help="连 checkpoints/ 与 models/ 一起打包（约 +370MB）")
+                    help="连权重一起打包：checkpoints/ + models/ + "
+                         "runs/yolo26_det 的 5 模态 YOLO 检测权重（约 +580MB）")
     args = ap.parse_args(argv)
 
     ver, contract = read_version(), read_contract()
@@ -158,13 +191,24 @@ def main(argv=None) -> int:
         ver=ver, contract=contract,
         when=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         weights_line=("" if not args.with_weights else
-                      "> 注：本包**已包含** `checkpoints/` 与 `models/` 权重。\n"),
+                      "> 注：本包**已包含** `checkpoints/`、`models/` 以及 "
+                      "`runs/yolo26_det/*/weights/best.pt`（5 模态检测权重）。\n"),
     )
 
     files = list(iter_files(args.with_weights))
     total = sum(p.stat().st_size for p, _ in files)
     print(f"[--] 软件版本 v{ver}（契约 {contract}）")
     print(f"[--] 待打包 {len(files)} 个文件，原始 {total / 1048576:.1f} MB")
+
+    # 权重清单：直接验明「完整版」到底带了哪些权重，避免又漏掉某一类
+    weight_files = [(p, rel) for p, rel in files if is_weight_file(rel)]
+    if args.with_weights:
+        w_mb = sum(p.stat().st_size for p, _ in weight_files) / 1048576
+        print(f"[--] 其中权重 {len(weight_files)} 个，合计 {w_mb:.1f} MB：")
+        for _, rel in weight_files:
+            print(f"       · {rel.as_posix()}")
+        if len(weight_files) == 0:
+            print("[WARN] --with-weights 已开启，但没匹配到任何权重文件，请检查白名单规则")
 
     priority = [rel for rel in PRIORITY_FILES
                 if (PROJECT_ROOT / rel).is_file() and rel not in {str(r) for _, r in files}]
