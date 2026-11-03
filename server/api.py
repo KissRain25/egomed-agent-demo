@@ -324,6 +324,7 @@ _ENGINE_LOCK = threading.Lock()   # 仅用于保护引擎懒加载（请求串�
 _ASR_WARMUP = None         # asr_medical.warmup（A.11），未就绪时为 None
 _ASR_MODULE = None         # asr_medical 模块本身：用来查 is_ready()（推理路径预热状态）
 _ASR_FALLBACK = False      # True = 已回退到旧 asr_engine（旧引擎无"就绪"概念，保持旧行为）
+_NL_ALIASES = None         # nl_parser.TARGET_ALIASES（目标→别名表），用于歧义判定与中文显示名
 
 
 def _asr_ready() -> bool:
@@ -361,7 +362,7 @@ def _get_engine():
     A.11：ASR 优先用优化版 asr_medical（接口与 asr_engine.transcribe 完全一致）；
     缺失时回退 asr_engine，保证启动不崩。
     """
-    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE, _ASR_FALLBACK
+    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE, _ASR_FALLBACK, _NL_ALIASES
     if _ENGINE_MODULES is not None:
         return _ENGINE_MODULES
     with _ENGINE_LOCK:
@@ -375,6 +376,12 @@ def _get_engine():
             sys.path.insert(0, str(PROJECT_ROOT))
         import egomed_demo as demo
         from nl_parser import parse_target
+        # 别名表：歧义判定（同一概念 vs 多个器官）+ 中文显示名都要用
+        try:
+            from nl_parser import TARGET_ALIASES as _ALIASES
+            _NL_ALIASES = _ALIASES
+        except ImportError:  # pragma: no cover —— 老版本 nl_parser 没有这张表
+            _NL_ALIASES = {}
         # A.11：换一行 import（asr_engine -> asr_medical），签名一致；缺失则回退
         try:
             import asr_medical
@@ -806,6 +813,61 @@ def _audio_payload(session_id: str, text: str, target: str, modality_hint: str,
     }
 
 
+def _zh_target_name(target: str, aliases: dict) -> str:
+    """目标的中文显示名（取第一个中文别名；没有中文别名就用标准名）。
+
+    医生看的是中文（"左心室"），不是 YOLO 权重里的类名（"LV cavity"）。
+    """
+    for a in aliases.get(target, []):
+        # 用 ord + 十六进制判 CJK（U+4E00 起），避免源码里写死字面字符
+        if a and any(ord(ch) >= 0x4E00 for ch in a):
+            return a
+    return target
+
+
+def _same_concept(targets: list[str], aliases: dict) -> tuple[bool, str]:
+    """判定多个命中目标是不是「同一个概念」的不同写法。
+
+    例："左心室" 在 MRI 里是 `LV cavity`、在超声里是 `Left Ventricle` ——
+    医生说的是一个东西，只是落在两个模态 → **跨模态歧义**，
+    要问他"是哪一个模态"（契约 A1 边界情况 2）。
+    而"肝脏和左肾"是两个不同器官 → **多目标**，不是歧义。
+
+    判据：别名表有交集，且交集里至少有一个长度 ≥2 的中文别名
+    （排除 "lv"/"rv" 这类过短别名造成的误判）。
+    返回 (是否同一概念, 共同中文别名)。
+    """
+    if len(targets) < 2:
+        return False, ""
+    sets = [set(aliases.get(t, [])) for t in targets]
+    if not sets or any(not s for s in sets):
+        return False, ""
+    common = set.intersection(*sets)
+    zh = sorted((a for a in common
+                 if len(a) >= 2 and any(ord(c) >= 0x4E00 for c in a)),
+                key=len)
+    return (bool(zh), zh[0] if zh else "")
+
+
+def _candidate_modalities(demo, targets: list[str]) -> list[str]:
+    """candidates = 候选**模态名**（按目标顺序去重，跳过解析不出模态的目标）。
+
+    2026-11-03 闫裁决：`candidates` 语义统一为「模态名」。
+    背景：契约 §4 字段说明写"候选目标"（如 `["左心室","右心室"]`），
+    而 §4 边界 2 的示例写的是模态名（`["ACDC (MRI 心脏)","CAMUS (超声)"]`）——
+    **契约自身矛盾**。现按边界 2 示例统一为模态名（也更符合"请医生选模态"的交互语义）。
+    """
+    out: list[str] = []
+    for t in targets:
+        try:
+            modality, _ = demo.resolve_modality(t)
+        except Exception:  # noqa: BLE001
+            modality = None
+        if modality and modality not in out:
+            out.append(modality)
+    return out
+
+
 def _handle_audio_real(session_id: str, audio_bytes: bytes, session: Session) -> dict:
     demo, parse_target, transcribe = _get_engine()
 
@@ -844,11 +906,24 @@ def _handle_audio_real(session_id: str, audio_bytes: bytes, session: Session) ->
         return _audio_payload(session_id, text, "", "", False, [], r.message, timing)
 
     if len(r.targets) > 1:
-        # 跨模态歧义：如"左心室"在 MRI 和超声里都存在（契约 A1 边界情况 2）
-        return _audio_payload(
-            session_id, text, "", "", True, r.targets,
-            f"「{text}」在多个模态里都存在，请明确是哪一个：{'、'.join(r.targets)}",
-            timing)
+        # 澄清分支（契约 A1 边界情况 2）。成因有两种，candidates 统一给**模态名**：
+        #   ① 跨模态歧义：同一概念在多个模态都有（"左心室" ∈ MRI 的 LV cavity / 超声的 Left Ventricle）
+        #      → 医生要回答"是哪个模态"，候选就是模态名
+        #   ② 多目标：医生一次说了多个器官（"肝脏和左肾"），引擎一次只分割一个
+        #      → 医生要回答"是哪个器官"，待选目标名放在 message 里
+        # ② 原来也写"在多个模态里都存在"，是**错的**（肝肾都在 CT 腹部，不是模态歧义），
+        #    现按成因分别措辞；无论哪种，candidates 都是模态名（闫 2026-11-03 裁决）。
+        modalities = _candidate_modalities(demo, r.targets)
+        same, zh = _same_concept(r.targets, _NL_ALIASES or {})
+        if same and len(modalities) >= 2:
+            msg = (f"「{zh}」在多个模态里都存在（{'、'.join(modalities)}），"
+                   f"请明确是哪一个")
+        else:
+            names = "、".join(_zh_target_name(t, _NL_ALIASES or {}) for t in r.targets)
+            msg = f"识别到多个目标：{names}（当前一次分割一个，请明确指定一个）"
+            if len(modalities) == 1:
+                msg += f"（都在 {modalities[0]} 里）"
+        return _audio_payload(session_id, text, "", "", True, modalities, msg, timing)
 
     target = r.targets[0]
     modality, _ = demo.resolve_modality(target)

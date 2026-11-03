@@ -143,6 +143,24 @@ class Aligner:
     def total(self) -> int:
         return len(self.items)
 
+    def check_semantics(self, cid: str, branch: str, r, fn) -> None:
+        """语义级断言（字段集合之外的取值约束）。
+
+        用于锁死那些「字段名/类型都对，但取值语义跑偏」的问题 ——
+        2026-11-03 的 `candidates` 就是这一类：字段在、类型对，但给的是 YOLO
+        类名而不是契约裁决的模态名，光比字段集合查不出来。
+        """
+        ks, body = keys_of(r)
+        try:
+            ok, detail = fn(body)
+        except Exception as exc:  # noqa: BLE001
+            ok, detail = False, f"断言执行失败：{exc}"
+        self.items.append({"id": cid, "branch": branch, "kind": "语义",
+                           "fields": sorted(ks), "missing": [], "extra": [],
+                           "leaked": [], "client_missing": [], "pass": bool(ok),
+                           "detail": detail})
+        log(f"  [{'PASS' if ok else 'FAIL'}] {cid} {branch:<34} {detail}")
+
     def write_report(self, out_dir: Path, extra_notes: list[str]) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         all_ok = self.passed == self.total and self.total > 0
@@ -286,6 +304,46 @@ def probe_real(url: str, al: Aligner) -> None:
     # R4 真引擎 · 空文件（边界 1）
     al.check("R4", "真引擎 · 空文件（边界 1）", "A1",
              post_frame(url, sid, b"", "empty.jpg"), al.a1_fields)
+
+    # ---- 语义级断言（契约 v1.0.6 决议 #16：candidates 恒为模态名）----
+    audio_dir = SAMPLE_DIR / "audio"
+
+    def _all_zh(names) -> bool:
+        """候选是否都是**含中文的显示名**（模态名形如 "ACDC (MRI 心脏)"；
+        YOLO 类名形如 "LV cavity"/"left kidney" 是纯英文 → 不合格）。"""
+        return bool(names) and all(any(ord(ch) >= 0x4E00 for ch in str(n))
+                                   for n in names)
+
+    # R5 跨模态歧义（cmd_01「帮我分割左心室」→ MRI/超声 都有）
+    cmd01 = audio_dir / "cmd_01.wav"
+    if cmd01.is_file():
+        def _amb(body):
+            cands = body.get("candidates") or []
+            if not body.get("need_confirm"):
+                return False, f"need_confirm={body.get('need_confirm')}（期望 True）"
+            if not cands:
+                return False, "candidates 为空"
+            if not _all_zh(cands):
+                return False, f"candidates={cands} 不是模态名（含 YOLO 类名？）"
+            return True, f"need_confirm=True，candidates={cands}（模态名 ✓）"
+        al.check_semantics("R5", "真引擎 · 歧义候选是模态名",
+                           post_audio(url, sid, cmd01.read_bytes(), cmd01.name), _amb)
+
+    # R6 多目标（cmd_08「帮我分割肝脏和左肾」→ 同在 CT 腹部，不是模态歧义）
+    cmd08 = audio_dir / "cmd_08.wav"
+    if cmd08.is_file():
+        def _multi(body):
+            msg = str(body.get("message") or "")
+            cands = body.get("candidates") or []
+            if not body.get("need_confirm"):
+                return False, f"need_confirm={body.get('need_confirm')}（期望 True）"
+            if not _all_zh(cands):
+                return False, f"candidates={cands} 不是模态名"
+            if "多个模态" in msg:
+                return False, f"message 误称模态歧义：{msg!r}（肝肾同在 CT 腹部）"
+            return True, f"candidates={cands}，message={msg!r}"
+        al.check_semantics("R6", "真引擎 · 多目标不误称模态歧义",
+                           post_audio(url, sid, cmd08.read_bytes(), cmd08.name), _multi)
 
 
 def main() -> int:
