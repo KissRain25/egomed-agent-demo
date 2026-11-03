@@ -407,12 +407,24 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
         fill_bgr = (0, 0, 255)
     overlay_files = []
     for i, image_path in enumerate(image_files):
-        pred_label = np.zeros((frame_h, frame_w), dtype=np.uint8)
+        # NOTE(2026-11-03)：标签图必须按**当前帧**尺寸建，不能沿用首帧尺寸。
+        # 背景：滚动窗口 WINDOW_SIZE=1，但宿主「安全删除守卫」会拦下批量删除
+        # （长稳实测 934 次采样里有 28 次窗口残留 2 帧），而样例帧目录里同时
+        # 存在 480x640 与 1728x2304 两种尺寸。一旦窗口里两帧尺寸不同，用首帧
+        # 尺寸建的 pred_label 与当前帧 image_rgb 对不上，
+        # overlay_prediction 里 `vis[pred_mask]` 直接抛 IndexError → 该帧 500。
+        # 实测后果：11/3504 请求失败（2026-11-03 长稳 runs/soak/20261103_121224）。
+        image_rgb = eng.read_rgb_image(image_path)
+        cur_h, cur_w = image_rgb.shape[:2]
+        pred_label = np.zeros((cur_h, cur_w), dtype=np.uint8)
         mask = masks.get(i)
         if mask is not None:
-            if mask.shape != (frame_h, frame_w):
+            mask = np.asarray(mask)
+            if mask.ndim == 3:            # 引擎已降维，这里再兜一层
+                mask = mask[0]
+            if mask.shape != (cur_h, cur_w):
                 mask = cv2.resize(
-                    mask.astype(np.uint8), (frame_w, frame_h),
+                    mask.astype(np.uint8), (cur_w, cur_h),
                     interpolation=cv2.INTER_NEAREST,
                 ).astype(bool)
             pred_label[mask] = int(class_id_to_gray[target_id])
@@ -421,7 +433,7 @@ def _segment_target(predictor, yolo_model, image_files, frame_dir, target_id,
 
         of = overlay_dir / f"{i:06d}.jpg"
         eng.overlay_prediction(
-            image_rgb=eng.read_rgb_image(image_path),
+            image_rgb=image_rgb,
             pred_label=pred_label,
             gt_label=None,
             class_id_to_gray=class_id_to_gray,
