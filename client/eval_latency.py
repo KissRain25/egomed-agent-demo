@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
 import sys
 import time
@@ -251,7 +252,28 @@ def main() -> int:
         for i, ms in enumerate(r["lat"]):
             lines.append(f"| {r['modality']} | {i} | {ms:.0f} |")
     (out_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    log(f"报告：{(out_dir / 'report.md').relative_to(PROJECT_ROOT)}")
+    # ---- N43：结构化输出（当众面板/其它脚本读数字用，别去解析 md 表格）----
+    payload = {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "url": args.url,
+        "frames_per_modality": args.frames,
+        "cases": [{k: v for k, v in r.items() if k != "details"} for r in results],
+    }
+    if ok:
+        all_lat = [x for r in ok for x in r["lat"]]
+        payload["overall"] = {
+            "mean": statistics.fmean(all_lat),
+            "p50": pct(all_lat, 50),
+            "p95": pct(all_lat, 95),
+            "max": max(all_lat),
+            "timeouts": sum(1 for x in all_lat if x > 3000),
+        }
+        if getattr(args, "detail", False):
+            payload["segments"] = _agg_timings([d for r in ok for d in (r.get("details") or [])])
+    (out_dir / "result.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"报告：{(out_dir / 'report.md').relative_to(PROJECT_ROOT)}"
+        f"　结构化：{(out_dir / 'result.json').relative_to(PROJECT_ROOT)}")
     return 0
 
 
