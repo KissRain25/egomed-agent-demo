@@ -46,6 +46,16 @@ from pathlib import Path
 # ---------------------------------------------------------------- 常量
 
 FALLBACK_VERSION = "0.2.4"      # VERSION 文件缺失时的兜底，正常不该走到
+# ---------------------------------------------------------------- PyInstaller 适配
+# 2026-11-04：把 launcher 打包成 egomed.exe（目标机不用装 Python 就能双击打开界面/自检）。
+# 两个必须记住的坑：
+#   1) sys.frozen=True 时 __file__ 指向 PyInstaller 的**临时解压目录**（_MEIPASS），
+#      那里既没有 client/ 也没有 VERSION —— 所以"项目根"必须改用 **exe 自己所在的目录**。
+#   2) 同理 sys.executable 指向 **exe 自己**，绝不能当 python 解释器用
+#      （否则 find_python 会把 exe 再起一遍），find_python 必须跳过它。
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+EXE_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else None
+
 # 2026-11-04：随 v1.0.7（N48 帧级模态自动识别 + N50 延迟优化）升到 v1.0.7。
 # 此前变更记录已写 v1.0.4、但常量没跟，导致诊断包 versions.json 报旧契约版本 —— 这条要盯住。
 CONTRACT_VERSION = "v1.0.7"
@@ -63,7 +73,11 @@ def read_version() -> str:
     `utf-8-sig` 兼容两种（有 BOM 无 BOM都能读），顺带把 BOM 剥掉。
     """
     here = Path(__file__).resolve().parent      # 不用 STAGE_DIR：它在下面才定义
-    for cand in (here / "VERSION", here.parent / "VERSION"):
+    cands = [here / "VERSION", here.parent / "VERSION"]
+    if IS_FROZEN and EXE_DIR is not None:
+        # exe 模式：版本文件在 exe 旁边（_MEIPASS 里没有）
+        cands.insert(0, EXE_DIR / "VERSION")
+    for cand in cands:
         try:
             if cand.is_file():
                 first = cand.read_text(encoding="utf-8-sig").strip().splitlines()
@@ -124,7 +138,13 @@ def log(tag: str, message: str) -> None:
 
 
 def find_project_root() -> Path:
-    """定位项目根：本文件既可能在根目录，也可能在子目录（草稿区）。"""
+    """定位项目根：源码模式看本文件位置；exe 模式看 exe 所在目录。"""
+    if IS_FROZEN and EXE_DIR is not None:
+        # exe 模式：_MEIPASS 里没有 client/，项目根 = exe 旁边那一层
+        for cand in (EXE_DIR, EXE_DIR.parent):
+            if (cand / "client").is_dir() or (cand / "VERSION").is_file():
+                return cand
+        return EXE_DIR
     for cand in (STAGE_DIR, STAGE_DIR.parent):
         if (cand / "client" / "live_client.py").exists():
             return cand
@@ -133,12 +153,26 @@ def find_project_root() -> Path:
 
 def find_python() -> str | None:
     """返回第一个可用的解释器路径；找不到返回 None（对应 E3001）。"""
-    for cand in PY_CANDIDATES:
+    cands = list(PY_CANDIDATES)
+    if IS_FROZEN and EXE_DIR is not None:
+        # exe 模式：优先找"exe 同目录"里随包携带的解释器（便携环境的常见摆法）
+        cands = [str(EXE_DIR / "python" / "python.exe"),
+                 str(EXE_DIR / "env" / "python.exe"),
+                 str(EXE_DIR / "runtime" / "python.exe")] + cands
+    for cand in cands:
         if cand and Path(cand).is_file():
             return cand
     # 最后兜底：PATH 里的 python
     from shutil import which
-    return which("python")
+    w = which("python")
+    if w:
+        try:
+            same = Path(w).resolve() == Path(sys.executable).resolve()
+        except Exception:  # noqa: BLE001
+            same = False
+        if not (IS_FROZEN and same):
+            return w
+    return None
 
 
 def load_config(root: Path) -> tuple[dict, str]:
@@ -220,7 +254,10 @@ def cmd_doctor(args) -> int:
         import torch  # noqa: F401
         log("[OK]", "依赖：torch")
     except Exception:
-        log("[--]", "依赖：torch 未安装（服务端推理需要，客户端不强制）")
+        if IS_FROZEN:
+            log("[--]", "依赖：torch 不在 exe 内（推理跑在服务端环境里，属正常）")
+        else:
+            log("[--]", "依赖：torch 未安装（服务端推理需要，客户端不强制）")
 
     try:
         import tkinter  # noqa: F401

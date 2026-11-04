@@ -5,6 +5,14 @@ __pycache__/
 .venv
 *.egg*
 build/*
+
+# --- PyInstaller 打包产物（2026-11-04）---
+# exe 可由 `python scripts/build_exe.py` 一键重新生成，不进版本库
+dist/*
+build/egomed_exe/
+*.exe
+egomed.exe
+egomed-test.exe
 _C.*
 outputs/*
 checkpoints/*.pt
