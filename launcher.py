@@ -45,10 +45,10 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-FALLBACK_VERSION = "0.2.3"      # VERSION 文件缺失时的兜底，正常不该走到
-# 2026-11-03：随 v1.0.6（决议 #16：candidates 语义统一为「候选模态名」）升到 v1.0.6。
+FALLBACK_VERSION = "0.2.4"      # VERSION 文件缺失时的兜底，正常不该走到
+# 2026-11-04：随 v1.0.7（N48 帧级模态自动识别 + N50 延迟优化）升到 v1.0.7。
 # 此前变更记录已写 v1.0.4、但常量没跟，导致诊断包 versions.json 报旧契约版本 —— 这条要盯住。
-CONTRACT_VERSION = "v1.0.6"
+CONTRACT_VERSION = "v1.0.7"
 
 
 def read_version() -> str:
@@ -407,6 +407,28 @@ def cmd_demo(args) -> int:
             lsg.stop_server(proc)
 
 
+def cmd_tidy(args) -> int:
+    """产物清理（N45 / N50 收口）：转发 `scripts/tidy_runs.py`。
+
+    默认只做**移动归档**（把 runs/ 根目录临时产物移到 runs/_archive/<日期>/），
+    **不删任何东西**；真删除要显式给 `--purge-archive N --yes`。
+
+    常用：
+        egomed tidy                              # 归档临时产物 + 体积榜
+        egomed tidy --keep-portable 2            # 便携包只留最近 2 个（单个约 551MB）
+    """
+    return forward_script("scripts/tidy_runs.py", args)
+
+
+def cmd_demo_video(args) -> int:
+    """录制演示视频（N51）：转发 `client/make_demo_video.py`。
+
+    需要**服务端已在跑**（脚本会真发 A2/A1 请求）。默认带 N48 演示段
+    （先发几帧未设目标的帧，展示"还没说话就认出模态"）。
+    """
+    return forward_script("client/make_demo_video.py", args)
+
+
 def cmd_regress(args) -> int:
     """一键回归（N22）：转发 `client/run_regression.py`，由它自己起/关服务端。
 
@@ -548,6 +570,8 @@ def build_parser() -> argparse.ArgumentParser:
         ("calibrate", cmd_calibrate, "机位校准", False),
         ("diag", cmd_diag, "生成诊断包", False),
         ("regress", cmd_regress, "一键回归（mock + real 两套验收）", True),
+        ("tidy", cmd_tidy, "产物清理（归档 runs/ 临时产物，便携包只留最近 N 个）", True),
+        ("demo-video", cmd_demo_video, "录制演示视频（需服务端在跑）", True),
         ("soak", cmd_soak, "长稳测试（默认 60 分钟）", True),
         ("warmup", cmd_warmup, "演示前预热（吃掉 ASR 冷启动，可选 --keep-server）", True),
     ):

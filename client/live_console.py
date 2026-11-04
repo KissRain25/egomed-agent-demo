@@ -125,6 +125,9 @@ JOB_SPECS = {
     "regress-mock": ("一键回归（mock 套件，秒级）", ["regress", "--suite", "mock"]),
     "regress-all": ("一键回归（完整，含真引擎）", ["regress"]),
     "soak": ("长稳测试（60 分钟）", ["soak", "--minutes", "60"]),
+    # 2026-11-04（N50 收口）：产物清理 + 演示录制
+    "tidy": ("产物清理（归档临时产物，便携包只留最近 2 个）", ["tidy", "--keep-portable", "2"]),
+    "demo-video": ("录制演示视频（需服务端在跑）", ["demo-video"]),
 }
 
 # 返回码 → 人话（与 launcher.py 的约定一致）
@@ -470,7 +473,7 @@ class Console:
         menubar.add_cascade(label="运行", menu=m_run)
 
         m_tool = tk.Menu(menubar, tearoff=0)
-        for kind in ("doctor", "check"):
+        for kind in ("doctor", "check", "tidy", "demo-video"):
             m_tool.add_command(label=JOB_SPECS[kind][0],
                                command=lambda k=kind: self.on_run_job(k))
         m_tool.add_command(label="机位校准（引导式，8 帧）", command=self.on_preflight)

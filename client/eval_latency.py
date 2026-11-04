@@ -54,6 +54,22 @@ def pct(vals, p: float) -> float:
     return s[min(len(s) - 1, int(round(p / 100.0 * (len(s) - 1))))]
 
 
+def _fetch_timings(url: str, session_id: str) -> dict:
+    """取服务端该会话**最近一帧的细粒度分段耗时**（N50）。
+
+    数据来源是 /healthz?session=<id> —— 非契约运维接口（契约 P2.11 白名单），
+    服务端在响应前把 _timings 私有字段挂到会话上，取不到就返回空 dict。
+    """
+    try:
+        import requests
+        r = requests.get(f"{url.rstrip('/')}/healthz",
+                         params={"session": session_id}, timeout=5)
+        data = r.json()
+        return data.get("timings") or {}
+    except Exception:  # noqa: BLE001  取不到不影响主流程
+        return {}
+
+
 def run_case(modality: str, target: str, wav: Path, frames_dir: Path, args):
     import requests
 
@@ -76,26 +92,73 @@ def run_case(modality: str, target: str, wav: Path, frames_dir: Path, args):
         log(f"  [注意] 期望目标 {target}，实际 {got}（继续统计）")
 
     lat, hits = [], 0
+    details: list[dict] = []
     for i in range(args.frames):
         jpg = mc.compress_image(frames[i % len(frames)])
         payload, ms, err = mc.post_frame(url, sid, jpg, f"lat_{i:03d}.jpg", args.timeout)
         lat.append(ms)
         if not err and payload.get("overlay"):
             hits += 1
+        if getattr(args, "detail", False):
+            details.append(_fetch_timings(url, sid))
     return {
         "modality": modality, "target": got, "frames": args.frames, "hits": hits,
-        "lat": lat, "a2_ms": a2_ms, "session": sid,
+        "lat": lat, "a2_ms": a2_ms, "session": sid, "details": details,
         "p50": pct(lat, 50), "p95": pct(lat, 95), "mean": statistics.fmean(lat),
         "max": max(lat), "min": min(lat),
     }
 
 
+# N50：服务端分段耗时的中文说明（段名 → 报告里显示的名字）
+SEG_LABEL = {
+    "cls": "分类(N48)",
+    "write": "写盘",
+    "prune": "删旧帧",
+    "models": "模型加载",
+    "resolve": "取帧",
+    "segment": "分割(总)",
+    "seg_detect": "└YOLO检测",
+    "seg_sam2_init": "└SAM2初始化",
+    "seg_reset_state": "└SAM2状态重置",
+    "seg_prop": "└SAM2传播",
+    "seg_mask_conv": "└掩膜换算",
+    "seg_render": "└渲染落盘",
+    "seg_add_box": "└SAM2加框解码",
+    "seg_read_img": "└引擎再读图",
+    "seg_save_mask": "└mask落盘PNG",
+    "seg_bbox": "└bbox计算",
+    "seg_decoder": "└mask解码器",
+    "seg_interp": "└插值回原分辨率",
+    "seg_consolidate": "└多目标合并",
+    "seg_prompt": "└prompt编码器",
+    "seg_empty_cache": "└清显存缓存",
+}
+SEG_ORDER = ["cls", "write", "prune", "models", "resolve", "segment",
+             "seg_detect", "seg_sam2_init", "seg_reset_state", "seg_prop",
+             "seg_add_box", "seg_prompt", "seg_decoder", "seg_interp", "seg_consolidate",
+             "seg_mask_conv", "seg_read_img", "seg_save_mask",
+             "seg_bbox", "seg_render", "seg_empty_cache"]
+
+
+def _agg_timings(details: list[dict]) -> dict:
+    """把多帧的分段耗时聚合成"每段平均毫秒"。"""
+    out: dict[str, float] = {}
+    for key in SEG_ORDER:
+        vals = [d[key] for d in details if d.get(key)]
+        if vals:
+            out[key] = statistics.fmean(vals)
+    return out
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="端到端延迟按模态统计（N8-2）")
+    ap = argparse.ArgumentParser(description="端到端延迟按模态统计（N8-2 / N50）")
     ap.add_argument("--frames", type=int, default=12, help="每个模态发多少帧（默认 12）")
     ap.add_argument("--url", default=mc.DEFAULT_URL, help="服务端地址")
     ap.add_argument("--timeout", type=float, default=30.0, help="单请求超时（秒）")
     ap.add_argument("--out", default="", help="输出目录（默认 runs/metrics/latency_<时间戳>）")
+    ap.add_argument("--detail", action="store_true",
+                    help="N50：额外抓服务端细粒度分段耗时，输出各段耗时占比表"
+                         "（写盘/模型加载/检测/SAM2初始化/传播…），用于定位瓶颈")
     args = ap.parse_args()
 
     try:
@@ -152,6 +215,37 @@ def main() -> int:
                   f"**P95 {pct(all_lat, 95):.0f} ms**　最大 {max(all_lat):.0f} ms",
                   f"- 契约性能预算参考：首次点名分割 ≤1500ms、后续跟踪帧 ≤200ms（`API_CONTRACT.md` §5.6）",
                   f"- 客户端单请求超时 3000ms：本次 {sum(1 for x in all_lat if x > 3000)} 次超时"]
+    # ---- N50：分段耗时占比表 ----
+    if getattr(args, "detail", False) and ok:
+        lines += ["", "## N50 分段耗时占比（服务端侧）", "",
+                  "口径：服务端 `wait/infer/encode` 之外的**细粒度**分段，"
+                  "由 `/healthz?session=<id>` 取（运维接口，非契约）；"
+                  "占比 = 该段平均毫秒 ÷ 客户端往返平均毫秒。",
+                  "分段名：`写盘`=落盘滚动窗口帧；`删旧帧`=prune 旧帧（Windows 上 unlink 可能触发安全扫描）；"
+                  "`模型加载`=按模态取 SAM2+YOLO（换模态首帧的现场加载，预热到位应为 0）；"
+                  "`取帧`=解析窗口帧；`分割(总)`=检测+SAM2+渲染（下面几行是它的细分）；"
+                  "`└…`= 引擎内运行时探针（引擎源文件未改）。", "",
+                  "| 模态 | 客户端往返均值 | " + " | ".join(SEG_LABEL[k] for k in SEG_ORDER) + " |",
+                  "|------|------|" + "------|" * len(SEG_ORDER)]
+        for r in ok:
+            agg = _agg_timings(r.get("details") or [])
+            cells = [f"{agg[k]:.0f} ({agg[k] / r['mean'] * 100:.0f}%)" if agg.get(k) else "—"
+                     for k in SEG_ORDER]
+            lines.append(f"| {r['modality']} | {r['mean']:.0f}ms | " + " | ".join(cells) + " |")
+        all_details = [d for r in ok for d in (r.get("details") or [])]
+        if all_details:
+            agg = _agg_timings(all_details)
+            all_lat = [x for r in ok for x in r["lat"]]
+            mean_all = statistics.fmean(all_lat)
+            cells = [f"{agg[k]:.0f} ({agg[k] / mean_all * 100:.0f}%)" if agg.get(k) else "—"
+                     for k in SEG_ORDER]
+            lines.append(f"| **全部合并** | **{mean_all:.0f}ms** | " + " | ".join(cells) + " |")
+            top = sorted(agg.items(), key=lambda kv: -kv[1])[:3]
+            lines += ["", "**占比最大的三段**："
+                      + "、".join(f"{SEG_LABEL.get(k, k)} {v:.0f}ms（{v / mean_all * 100:.0f}%）"
+                                  for k, v in top)]
+            lines += ["", "> 优化按这个表的占比来定，**不靠猜**；"
+                      "任何降精度类手段都必须附 Dice 对照（`client/eval_segmentation.py`）。"]
     lines += ["", "## 逐帧明细", "", "| 模态 | 帧 | 耗时(ms) |", "|------|----|---------|"]
     for r in ok:
         for i, ms in enumerate(r["lat"]):

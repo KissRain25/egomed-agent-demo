@@ -89,6 +89,9 @@ def main(argv=None) -> int:
                     help=f"体积告警阈值（GB，默认 {SIZE_WARN_GB:g}）")
     ap.add_argument("--purge-archive", type=float, default=0.0, metavar="DAYS",
                     help="删除 N 天前的归档目录（需同时给 --yes）")
+    ap.add_argument("--keep-portable", type=int, default=0, metavar="N",
+                    help="runs/portable/ 只保留最近 N 个便携包 zip，其余移到 _archive/portable/"
+                         "（0=不处理；便携包单个约 551MB，攒多了很快上 GB）")
     ap.add_argument("--yes", action="store_true", help="确认执行 --purge-archive")
     args = ap.parse_args(argv)
 
@@ -132,7 +135,38 @@ def main(argv=None) -> int:
                 print(f"       [警告] 移动失败 {src.name}：{exc}")
         print(f"       ✔ 已归档 {len(moves)} 个")
 
-    # ---------- ② 体积榜 ----------
+    # ---------- ② 便携包只保留最近 N 个（N50 收口新增） ----------
+    if args.keep_portable > 0:
+        pdir = RUNS / "portable"
+        zips = sorted(pdir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True) \
+            if pdir.is_dir() else []
+        drop = zips[args.keep_portable:]
+        if drop:
+            freed = sum(p.stat().st_size for p in drop)
+            print(f"[便携包] runs/portable/ 共 {len(zips)} 个 zip → 只保留最近 "
+                  f"{args.keep_portable} 个，其余 {len(drop)} 个归档（可回收 {human(freed)}）")
+            for p in drop[:6]:
+                print(f"       · {p.name} → _archive/portable/")
+            if len(drop) > 6:
+                print(f"       · …另有 {len(drop) - 6} 个")
+            if not args.dry_run:
+                dst_dir = ARCHIVE / "portable"
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                ok = 0
+                for p in drop:
+                    dst = dst_dir / p.name
+                    if dst.exists():
+                        dst = dst_dir / f"{p.stem}_{int(p.stat().st_mtime)}{p.suffix}"
+                    try:
+                        shutil.move(str(p), str(dst))
+                        ok += 1
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"       [警告] 移动失败 {p.name}：{exc}")
+                print(f"       ✔ 已归档 {ok} 个便携包")
+        else:
+            print(f"[便携包] runs/portable/ 共 {len(zips)} 个 zip，无需清理")
+
+    # ---------- ③ 体积榜 ----------
     print()
     subs: list[tuple[int, str]] = []
     root_files = 0

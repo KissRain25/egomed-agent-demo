@@ -247,7 +247,7 @@ def run_offline(frames_dir: Path, modality: str, target: str, out_dir: Path,
 
 
 # ---------------------------------------------------------------- 在线模式
-def run_online(frames_dir: Path, modality: str, target: str, args):
+def run_online(frames_dir: Path, modality: str, target: str, args, out_dir: Path):
     """逐帧走 HTTP（与真实客户端一致）：A2 设目标 → 逐帧 A1 → 取服务端落盘的掩膜"""
     import requests
 
@@ -274,6 +274,12 @@ def run_online(frames_dir: Path, modality: str, target: str, args):
     mask_dir = STREAM_DIR / sid / "seg" / "masks"
     frames = sorted(frames_dir.glob("*.jpg"))
     latencies, masks_copied = [], 0
+    # 2026-11-04（N50）修正：**窗口=1 时服务端每次请求的掩膜都落在同一个文件名**
+    # （demo 内部用**窗口内索引**命名 → 恒为 000000.png），下一帧会把它覆盖。
+    # 所以必须在**每帧请求返回后立刻**把最新那张拷走，否则跑完只剩 1 张，
+    # 在线 Dice 会算成"1/8 检出"（实测 0.064）—— 那是评测口径坏了，不是算法坏了。
+    live_dst = out_dir / "online" / "masks"
+    live_dst.mkdir(parents=True, exist_ok=True)
     for i, fp in enumerate(frames):
         jpg = mc.compress_image(fp)
         payload, ms, err = mc.post_frame(url, sid, jpg, f"{i:06d}.jpg", args.timeout)
@@ -285,6 +291,7 @@ def run_online(frames_dir: Path, modality: str, target: str, args):
         newest = max(pngs_now, key=lambda p: p.stat().st_mtime) if pngs_now else None
         if payload.get("overlay") and newest is not None:
             masks_copied += 1
+            shutil.copy(newest, live_dst / f"{i:06d}.png")
         log(f"  帧 {i}: overlay={'有' if payload.get('overlay') else '无'} "
             f"target={payload.get('target') or '-'} {ms:.0f}ms")
     log(f"  A1 共 {len(frames)} 帧，检出 {masks_copied} 帧；延迟 均值 {np.mean(latencies):.0f}ms / "
@@ -293,12 +300,21 @@ def run_online(frames_dir: Path, modality: str, target: str, args):
 
 
 def collect_online_masks(mask_dir: Path, frames_dir: Path, out_dir: Path):
-    """把服务端掩膜按帧序复制出来（服务端文件名是它自己的计数器，这里按 mtime 排序对齐）"""
+    """把服务端掩膜按帧序复制出来。
+
+    2026-11-04 起主逻辑已移到 `run_online`（每帧请求后立刻拷走）——
+    窗口=1 时服务端掩膜文件名恒为 000000.png，会被下一帧覆盖，事后收集必然只剩 1 张。
+    这里保留为**兜底**：若 run_online 没收集到（例如历史目录），再按 mtime 兜底收集。
+    """
     dst = out_dir / "online" / "masks"
     dst.mkdir(parents=True, exist_ok=True)
-    # 服务端掩膜文件名是它自己的零填充计数器（000001.png …），按名排序即发送顺序
-    pngs = sorted(mask_dir.glob("*.png"), key=lambda p: p.stem) if mask_dir.exists() else []
+    have = len(list(dst.glob("*.png")))
     n = len(sorted(frames_dir.glob("*.jpg")))
+    if have >= n:
+        log(f"  服务端掩膜（请求时即时收集）{have} 张 → {dst.relative_to(PROJECT_ROOT)}")
+        return dst
+    # 兜底：按 mtime 排序取前 n 张（老服务端会按自己的计数器命名）
+    pngs = sorted(mask_dir.glob("*.png"), key=lambda p: p.stat().st_mtime) if mask_dir.exists() else []
     for i, src in enumerate(pngs[:n]):
         shutil.copy(src, dst / f"{i:06d}.png")
     log(f"  收集服务端掩膜 {len(list(dst.glob('*.png')))} 张 → {dst.relative_to(PROJECT_ROOT)}")
@@ -351,7 +367,7 @@ def main() -> int:
         results["offline"] = eval_masks(mask_dir, ldir, gray, pairs, "离线(窗口=10,原 demo)")
         results["offline"]["seconds"] = dt
     if args.mode in ("both", "online"):
-        mask_dir, sid, lat = run_online(frames_dir, args.modality, args.target, args)
+        mask_dir, sid, lat = run_online(frames_dir, args.modality, args.target, args, out_dir)
         out_masks = collect_online_masks(mask_dir, frames_dir, out_dir)
         results["online"] = eval_masks(out_masks, ldir, gray, pairs, "在线(窗口=1,当前实现)")
         results["online"]["latency_mean_ms"] = float(np.mean(lat))

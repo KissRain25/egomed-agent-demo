@@ -39,6 +39,29 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+# 服务端自有模块：modality_classifier（帧级模态分类，N48）。
+# 以脚本方式运行时（python server/api.py）本目录不在 sys.path 里 —— 显式加一次。
+# 该模块顶层**不加载** torch/ultralytics（模型是懒加载），所以导入本身很轻。
+_SERVER_DIR = Path(__file__).resolve().parent
+if str(_SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(_SERVER_DIR))
+import modality_classifier as _modality_cls   # noqa: E402
+
+# ---------------------------------------------------------------------------
+# GPU 可见性兜底（2026-11-04，N50 实测踩坑后加）
+# ---------------------------------------------------------------------------
+# ultralytics 的 select_device() 在 **CPU 模式**下会执行
+#     os.environ["CUDA_VISIBLE_DEVICES"] = ""   # 注释原文: force torch.cuda.is_available() = False
+# 只要进程里有任何一次 CPU 模式的 ultralytics 调用（本次就是帧级模态分类器），
+# 这个环境变量就会被置空。torch 只在**首次初始化 CUDA 时**读一次该变量，
+# 于是之后 torch.cuda.device_count() 恒为 0 → 分割链路
+# `torch.cuda.get_device_properties(0)` 抛 AssertionError("Invalid device id")
+# → 已设目标的 A1 全部 500（2026-11-04 实测复现）。
+#
+# 这里在**任何 torch 初始化之前**把可见设备钉死成 "0"（与引擎模块
+# scripts/demo/egomed_demo.py 的取值一致），保证 torch 初始化时看到 1 张卡。
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 # ---------------------------------------------------------------------------
 # 常量（改这里 = 改契约，必须同步 docs/API_CONTRACT.md）
 # ---------------------------------------------------------------------------
@@ -103,6 +126,30 @@ MIN_AREA_RATIO_BY_MODALITY = {
     "Amos (CT 腹部)": 0.0001,
 }
 
+# ---------------------------------------------------------------------------
+# N48：帧级模态自动识别（契约 §5.3 第 8 条 / 附录 A.10 P1.5）
+# ---------------------------------------------------------------------------
+# 医生还没说话时，用帧级分类器猜"这是哪张片子"，把模态名显示出来，
+# 而不是只回一句"请先告诉我分割哪个器官"。
+#
+# ⚠️ **阈值 0.85 是实测推出来的，不是拍脑袋**（client/eval_modality_cls.py
+#    --frames 200 --by-case，599 帧 / 672 个病例）：
+#   · 纯影像帧（ACDC/CAMUS/Amos/PolypGen）：判对 100%，置信度 ≥0.94；
+#   · Montgomery 里有 **18.7%（28/150）的病例是"手机拍屏幕"的实拍照片**，
+#     分类器把它们**系统性误判成 MRI**（置信度 0.46~0.84）；
+#   · 试过把分类输入分辨率从 224 提到 640 —— 实拍帧**仍然全判 MRI**
+#     （纯影像帧置信度反而从 0.99 掉到 0.67）→ 不是分辨率问题，是**没这类训练样本**。
+#   · 阈值 0.85 把这批误判**全部**转成"判不出" → **误判率 0%**，
+#     代价是 7% 的帧不显示模态提示（判不出无害，见下）。
+# 为什么"误判"必须为 0 而"判不出"可以接受：
+#   帧分类的结果**只是给医生看的提示** —— 真正决定分割模态的仍然是
+#   「语音目标 → demo.resolve_modality」这条主链路。所以：
+#     判错 → 提示文字误导医生（有害）；判不出 → 回落到"请先告诉我"（无害）。
+#   宁可不出提示，也不能出错的提示。
+MODALITY_MIN_CONF = 0.85
+# 契约 §5.3：「连续 3 帧一致才切」—— 防画面抖动导致模态来回跳
+MODALITY_DEBOUNCE_N = 3
+
 # 假实现固定值（契约附录 A.6）
 MOCK_MODALITY = "ACDC (MRI 心脏)"
 MOCK_TARGET = "LV cavity"
@@ -112,6 +159,21 @@ MOCK_AUDIO_MESSAGE = "已切换到左心室"
 
 # P0.2 预热：--real 启动时同步加载的常用模态（至少 1 个，可按需扩展）
 WARMUP_MODALITIES = ("ACDC (MRI 心脏)",)
+# N50：预热覆盖**全部 5 个模态** —— 消除"换模态第一帧要现场加载 YOLO 权重"。
+# 实测全量的额外成本只有约 0.7 秒（ACDC 1.5s + 其余 4 个各 0.1~0.3s），
+# 换来"就绪之后切任何模态都不用等第一帧" —— 非常划算。
+#
+# ⚠️ 为什么必须**同步**预热、不能放后台线程（2026-11-04 实测踩坑，踩了整整一轮）：
+#   ultralytics 8.4.6 的 `select_device()` 会**改写进程级** `os.environ["CUDA_VISIBLE_DEVICES"]`。
+#   在 CUDA **已经初始化之后**改写它，对 torch 是无效的（torch 内部仍按初始化时的映射），
+#   但环境变量一旦被污染成越界值（本机 1 张卡，值为 "1"），
+#   后续任何 `torch.cuda.get_device_properties(0)` 都会抛 **"Invalid device id"**
+#   → 推理路径 500/5000，全盘皆挂（独立进程复现不出来，只有并发预热才会踩到）。
+#   在**主线程**里、CUDA 初始化之前一次性把 5 个 YOLO 都建好，环境变量只被污染一次，
+#   且那时设置仍然生效 → 稳定。
+WARMUP_ALL_MODALITIES = True
+# 逃生阀：只想预热 ACDC（保留旧的"就绪快"行为，换模态第一帧会慢）时用 --warmup-acdc-only
+WARMUP_ACDC_ONLY = False
 
 # 错误码（契约第六节）
 E_PARAM = 1001        # 参数缺失或格式错误
@@ -133,6 +195,12 @@ REAL_ENGINE = os.environ.get("EGOMED_REAL_ENGINE", "0") == "1"
 # failed 时 /healthz 返 503 + state=failed，A2 直接返 500/5000，不再让请求空等。
 _SERVER_STATE = "ready"
 _WARMUP_ERROR = ""            # 预热失败原因（state=failed 时给客户端/日志看）
+_WARMUP_ACDC_ONLY = False     # N50：--warmup-acdc-only（只预热 ACDC，保留旧的"就绪快"行为）
+# N50：进入时的 CUDA_VISIBLE_DEVICES 快照（导入引擎后 = "0"）。
+# ultralytics 的 select_device() 会改写它，在 CUDA 初始化之后改写对 torch 无效、
+# 但会把环境变量污染成越界值 → 后续 get_device_properties(0) 抛 "Invalid device id"。
+# 预热结束后恢复成这个快照，杜绝污染。
+_CVD_SNAPSHOT: Optional[str] = None
 
 # 契约 A1 边界 1 的统一文案（决议 #15）。
 # 边界 1 = "画面不可用 / 未识别出模态"：一律 status:"ok" + modality/target/overlay 全空
@@ -157,6 +225,16 @@ class Session:
         # 这两个计数只进 /healthz（运维接口）与服务端日志，**不进契约响应体**。
         self.dropped_frames: int = 0
         self.client_gone: int = 0
+
+        # N48：帧级模态防抖状态（契约 §5.3 第 8 条：连续 3 帧一致才切）。
+        # 只在内存里（不落盘、不进响应体），与 frames_processed 计数口径互不影响。
+        self.modality_votes: list[str] = []      # 最近 N 帧的分类结果（多数票）
+        self.modality_stable: str = ""           # 当前稳定模态（"" = 尚未稳定）
+        self.modality_conf: float = 0.0          # 稳定模态那一帧的置信度
+
+        # N50：最近一帧的**细粒度分段耗时**（写盘/模型加载/取帧/分割/编码）。
+        # 只进 /healthz（运维接口）与服务端日志，不进契约响应体。
+        self.last_timings: dict = {}
 
         # P0.1 丢帧语义：每会话串行 + 队列长度=1 + 新帧覆盖旧的未处理帧。
         # 帧处理用 condition 协调（latest-wins）；音频用普通锁串行即可。
@@ -204,6 +282,7 @@ class Session:
                     out = dict(self._last_result or {})
                     out["_wait_ms"] = _ms(wait_t0)
                     out["_encode_ms"] = 0
+                    out["_timings"] = {}      # N50：被丢弃的帧没有自己的分段耗时
                     out["_dropped"] = True
                     return out
                 # 本线程成为 worker，取当前最新帧处理（更早的旧帧随之丢弃）
@@ -223,8 +302,10 @@ class Session:
         with cv:
             self._working = False
             self._done_seq = seq
-            # 缓存不含 _encode_ms（该值只对本请求有效，避免污染后续 dropped 帧的日志）
-            self._last_result = {k: v for k, v in result.items() if k != "_encode_ms"}
+            # 缓存不含 _encode_ms / _timings（这些值只对本请求有效，
+            # 避免污染后续 dropped 帧的日志）
+            self._last_result = {k: v for k, v in result.items()
+                                 if k not in ("_encode_ms", "_timings")}
             cv.notify_all()
         out = dict(result)
         out["_wait_ms"] = wait_ms
@@ -305,13 +386,17 @@ def _ms(t0: float) -> int:
 
 def _log_frame(session_id: str, frame_no: int, modality: str, target: str,
                elapsed_ms: int, status: str,
-               wait_ms: int = 0, infer_ms: int = 0, encode_ms: int = 0) -> None:
+               wait_ms: int = 0, infer_ms: int = 0, encode_ms: int = 0,
+               detail: str = "") -> None:
     # T9：拆出分段耗时（排队 wait / 推理 infer / 编码 encode / 合计 total），
     # 用于定位 A2/A1 并发超时卡在哪一段。
+    # N50：detail 追加**细粒度**分段（写盘/模型加载/取帧/分割/编码），
+    # 拼在行尾 —— 既有的 wait/infer/encode 字段与位置不变，老解析不受影响。
     _log.info(
         f"session={session_id} | frame={frame_no} | modality={modality or '-'} | "
         f"target={target or '-'} | wait={wait_ms}ms infer={infer_ms}ms "
         f"encode={encode_ms}ms total={elapsed_ms}ms | status={status}"
+        + (f" | {detail}" if detail else "")
     )
 
 
@@ -369,7 +454,7 @@ def _get_engine():
     A.11：ASR 优先用优化版 asr_medical（接口与 asr_engine.transcribe 完全一致）；
     缺失时回退 asr_engine，保证启动不崩。
     """
-    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE, _ASR_FALLBACK, _NL_ALIASES
+    global _ENGINE_MODULES, _ASR_WARMUP, _ASR_MODULE, _ASR_FALLBACK, _NL_ALIASES, _CVD_SNAPSHOT
     if _ENGINE_MODULES is not None:
         return _ENGINE_MODULES
     with _ENGINE_LOCK:
@@ -382,6 +467,15 @@ def _get_engine():
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
         import egomed_demo as demo
+        # N50：装引擎计时探针（运行时 monkey-patch，**不改引擎源文件**）
+        _install_timing_probes(demo)
+        # N50：快照导入引擎后的 CUDA_VISIBLE_DEVICES（引擎模块自己会设成 "0"）。
+        # ultralytics 的 select_device() 会在建 YOLO 时改写这个环境变量；在 CUDA
+        # 已初始化之后改写对 torch 无效，但会把环境变量污染成越界值 →
+        # 后续 torch.cuda.get_device_properties(0) 抛 "Invalid device id" → 推理全挂。
+        # 预热结束后恢复成这个快照即可杜绝。
+        if _CVD_SNAPSHOT is None:
+            _CVD_SNAPSHOT = os.environ.get("CUDA_VISIBLE_DEVICES")
         from nl_parser import parse_target
         # 别名表：歧义判定（同一概念 vs 多个器官）+ 中文显示名都要用
         try:
@@ -408,12 +502,13 @@ def _get_engine():
 
 
 def _warmup_real_engine() -> None:
-    """--real 启动时后台预热（P0.2 + A.11 + T2）：
+    """--real 启动时后台预热（P0.2 + A.11 + T2 + N50）：
 
     - 分阶段打印进度与每阶段耗时（[1/3] 引擎模块 → [2/3] 常用模态 SAM2/YOLO → [3/3] ASR）；
     - 预热结束（无论成败）都会把 _SERVER_STATE 置为 ready。服务**提前监听**，
       预热期间 /healthz 返回 503 + state=warming，客户端据此显示"预热中"，
-      不必再盲等 60~90 秒（T2）。
+      不必再盲等 60~90 秒（T2）；
+    - N50：其余模态的模型改由**后台线程**依次补齐（--warmup-all 可改成同步全量）。
 
     ASR 预热失败不阻塞启动：A2 已有优雅降级，仅首个 A2 请求会变慢。
     """
@@ -424,11 +519,32 @@ def _warmup_real_engine() -> None:
         t0 = time.perf_counter()
         demo, _parse_target, _transcribe = _get_engine()
         print(f"[server]   [1/3] 引擎模块加载完成（{_ms(t0)}ms）", flush=True)
-        for modality in WARMUP_MODALITIES:
+        warm_set = WARMUP_MODALITIES
+        if not _WARMUP_ACDC_ONLY:
+            # N50：全量预热（额外约 0.7s，换来"切任何模态都不用等第一帧"）
+            warm_set = tuple(getattr(demo, "MODALITIES", {}).keys())
+            print(f"[server]   [2/3] 全量预热 {len(warm_set)} 个模态模型"
+                  f"（切模态不用等第一帧）...", flush=True)
+        for modality in warm_set:
             print(f"[server]   [2/3] 加载模态模型（SAM2 + YOLO）：{modality} ...", flush=True)
             t1 = time.perf_counter()
             demo._get_models(modality)
             print(f"[server]         {modality} 完成（{_ms(t1)}ms）", flush=True)
+        # N50 保险：ultralytics 的 select_device() 会改写 CUDA_VISIBLE_DEVICES，
+        # 在 CUDA 初始化之后改写对 torch 无效但会污染后续 get_device_properties()。
+        # 预热完成后把环境变量恢复成进入时的值，杜绝"越界值 → Invalid device id"。
+        if _CVD_SNAPSHOT is not None and os.environ.get("CUDA_VISIBLE_DEVICES") != _CVD_SNAPSHOT:
+            print(f"[server]   恢复 CUDA_VISIBLE_DEVICES："
+                  f"{os.environ.get('CUDA_VISIBLE_DEVICES')!r} → {_CVD_SNAPSHOT!r}", flush=True)
+            os.environ["CUDA_VISIBLE_DEVICES"] = _CVD_SNAPSHOT
+        # N48：把帧级模态分类器也预热掉 —— 否则第一次"未设目标"的 A1 请求
+        # 要等 ultralytics 加载模型（~1s），可能顶穿客户端 3s 超时。
+        # 加载失败不阻塞启动：分类不可用时服务端按"判不出"处理（走契约边界 1）。
+        t1 = time.perf_counter()
+        st_cls = _modality_cls.status()
+        print(f"[server]   [2.5/3] 帧级模态分类器："
+              f"{'就绪' if st_cls['available'] else '不可用（降级为判不出）'}"
+              f"（{_ms(t1)}ms，device={st_cls['device']}）", flush=True)
         if _ASR_WARMUP is not None:
             print("[server]   [3/3] 预热 ASR（medium whisper，约 30s）...", flush=True)
             t2 = time.perf_counter()
@@ -462,6 +578,24 @@ def _frame_dir(session_id: str) -> Path:
     return STREAM_DIR / session_id / "frames"
 
 
+def _max_frame_counter(frame_dir: Path) -> int:
+    """目录里现有的最大帧序号（没有则 0）。
+
+    2026-11-04：进程重启后 `Session.frame_counter` 从 0 重置，若直接用 1 会**覆盖**
+    上一轮进程留下的 {counter:06d}.jpg —— 新旧帧混在同一窗口里，检测可能读到
+    陈旧帧。这里从目录里已有的最大序号续接，保证序号单调递增、不覆盖旧文件。
+    """
+    best = 0
+    try:
+        for p in frame_dir.glob("*.jpg"):
+            stem = p.stem
+            if stem.isdigit():
+                best = max(best, int(stem))
+    except OSError:
+        pass
+    return best
+
+
 def _prune_window(frame_dir: Path, keep: int) -> None:
     """只保留最近 keep 帧，更早的删掉（文件名 {counter:06d}.jpg，零填充保证排序正确）。
 
@@ -470,9 +604,21 @@ def _prune_window(frame_dir: Path, keep: int) -> None:
     **抛 SystemExit（注意：它不是 Exception 的子类，`except Exception` 抓不住）**，
     若不吞掉就会让这一帧返 HTTP 500 —— 60 分钟长稳实测 355/7200 = 4.9% 的请求因此失败。
     语义：**删不掉就留着**，临时窗口帧残留不影响本帧结果。
+
+    ⚠️ 2026-11-04 修正（N50 排查时抓到的真缺陷）：原来按**文件名**排序保留最后 keep 个。
+    进程重启后 `Session.frame_counter` 从 0 重置，而会话目录里可能还留着上一轮
+    进程写的 {counter:06d}.jpg（序号更大）—— 于是**本轮刚写的新帧会被当成"更旧"删掉**，
+    窗口里只剩陈旧帧，检测跑的是上一轮的图 → 表现为"分割莫名失败/无结果"。
+    改成按**修改时间**排序保留最新 keep 个（"最近"本来就该按时间算），
+    序号只作同秒内的次级排序键。
     """
-    files = sorted(frame_dir.glob("*.jpg"), key=lambda p: p.stem)
-    for f in files[:-keep]:
+    try:
+        files = sorted(frame_dir.glob("*.jpg"),
+                       key=lambda p: (p.stat().st_mtime, p.stem))
+    except OSError:
+        return
+    targets = files[:-keep] if keep > 0 else files
+    for f in targets:
         try:
             f.unlink(missing_ok=True)
         except (Exception, SystemExit) as exc:  # noqa: BLE001  ← SystemExit 也要接住
@@ -718,23 +864,345 @@ def _handle_audio_mock(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # 真引擎（T7）
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# N48：帧级模态自动识别（契约 §5.3 第 8 条 / 附录 A.10 P1.5）
+# ---------------------------------------------------------------------------
+def _classify_modality(image_bytes: bytes) -> tuple[str, float, str]:
+    """帧 → 模态猜测。**任何异常都降级为"判不出"**（绝不把 A1 打成 500）。
+
+    返回 (模态键或空串, 置信度, 原始类别名)。
+    """
+    try:
+        g = _modality_cls.classify(image_bytes, min_conf=MODALITY_MIN_CONF)
+        return g.name or "", g.confidence, g.raw_label
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("帧级模态分类异常（降级为判不出）：%s", exc)
+        return "", 0.0, ""
+
+
+def _update_modality_vote(session: Session, guess: str) -> str:
+    """把本次分类结果并入会话投票，返回**当前稳定模态**（未稳定则空串）。
+
+    契约 §5.3 第 8 条：「**连续 3 帧一致才切，低置信保持原模态**」。
+    判不出（空票）不打断连续计数，也不会把已稳定的模态改掉。
+    """
+    votes = session.modality_votes
+    votes.append(guess or "")
+    if len(votes) > MODALITY_DEBOUNCE_N:
+        del votes[:len(votes) - MODALITY_DEBOUNCE_N]
+    if len(votes) < MODALITY_DEBOUNCE_N:
+        return session.modality_stable
+    last = votes[-1]
+    if last and all(v == last for v in votes):
+        session.modality_stable = last
+    # 否则保持原模态（不切）
+    return session.modality_stable
+
+
+# ---------------------------------------------------------------------------
+# N50：引擎计时探针（**运行时注入，不改引擎源文件**）
+# ---------------------------------------------------------------------------
+# 为什么要探针：`_handle_frame_real` 里的 "segment" 段是一整个黑盒
+# （YOLO 检测 → 误检过滤 → SAM2 init_state → 传播 → 掩膜换算 → overlay 渲染落盘），
+# 光看总占比没法判断该优化哪一步、收益多大。
+#
+# 实现方式：在**服务端进程内**用包装函数替换引擎对象上的方法（monkey-patch）。
+# 引擎源文件 `scripts/demo/egomed_demo.py` 与 `scripts/egomed_agent/egomed-agent-iou06.py`
+# **一行都不动** —— 这样"不改引擎"的红线不破，又能拿到分段数据。
+# 引擎模块只 import 一次，探针也只装一次（幂等）。
+_TIMING_PROBE: dict[str, int] = {"detect": 0, "sam2_init": 0, "prop": 0,
+                                "render": 0, "mask_conv": 0, "reset_state": 0,
+                                "add_box": 0, "read_img": 0, "save_mask": 0, "bbox": 0,
+                                "decoder": 0, "interp": 0, "consolidate": 0,
+                                "prompt": 0, "empty_cache": 0}
+
+
+def _reset_timing_probe() -> None:
+    for _k in _TIMING_PROBE:
+        _TIMING_PROBE[_k] = 0
+
+
+def _install_timing_probes(demo) -> None:
+    """给引擎模块装计时探针（幂等；只装一次）。"""
+    if getattr(demo, "_egomed_timing_probes", False):
+        return
+    eng = getattr(demo, "eng", None)
+    if eng is None:
+        return
+
+    # 1) YOLO 检测（每帧一次）
+    orig_detect = eng.precompute_yolo_detections
+
+    def _timed_detect(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return orig_detect(*args, **kwargs)
+        finally:
+            _TIMING_PROBE["detect"] += _ms(t0)
+
+    eng.precompute_yolo_detections = _timed_detect
+
+    # 2) SAM2 传播（**是生成器**：必须用 yield from 包，否则计时只记到"创建"为止）
+    orig_prop = eng.propagate_video
+
+    def _timed_prop(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            yield from orig_prop(*args, **kwargs)
+        finally:
+            _TIMING_PROBE["prop"] += _ms(t0)
+
+    eng.propagate_video = _timed_prop
+
+    # 3) overlay 渲染 + 落盘（写回给客户端的图就是它渲染的）
+    orig_overlay = getattr(eng, "overlay_prediction", None)
+    if orig_overlay is not None:
+        def _timed_overlay(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_overlay(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["render"] += _ms(t0)
+
+        eng.overlay_prediction = _timed_overlay
+
+    # 4) 掩膜换算（SAM2 logits → 二值 mask）
+    orig_mask = getattr(eng, "sam2_masks_from_output", None)
+    if orig_mask is not None:
+        def _timed_mask(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_mask(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["mask_conv"] += _ms(t0)
+
+        eng.sam2_masks_from_output = _timed_mask
+
+    # 5) SAM2 加框解码（prompt encoder + mask decoder + 插值回原分辨率）
+    orig_add_box = getattr(eng, "sam2_add_box", None)
+    if orig_add_box is not None:
+        def _timed_add_box(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_add_box(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["add_box"] += _ms(t0)
+
+        eng.sam2_add_box = _timed_add_box
+
+    # 6) 引擎再读一次同一个 JPEG（overlay 渲染要用原图）
+    orig_read_rgb = getattr(eng, "read_rgb_image", None)
+    if orig_read_rgb is not None:
+        def _timed_read_rgb(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_read_rgb(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["read_img"] += _ms(t0)
+
+        eng.read_rgb_image = _timed_read_rgb
+
+    # 7) mask PNG 落盘（实时链路**无人读**这个文件）
+    orig_save_label = getattr(eng, "save_pred_label", None)
+    if orig_save_label is not None:
+        def _timed_save_label(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_save_label(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["save_mask"] += _ms(t0)
+
+        eng.save_pred_label = _timed_save_label
+
+    # 8) bbox 计算（np.where 全图扫描）
+    orig_bbox = getattr(eng, "mask_to_bbox", None)
+    if orig_bbox is not None:
+        def _timed_bbox(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_bbox(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["bbox"] += _ms(t0)
+
+        eng.mask_to_bbox = _timed_bbox
+
+    demo._egomed_timing_probes = True
+
+
+def _patch_predictor_timing(predictor) -> None:
+    """给 SAM2 predictor 的 init_state 打计时（实例级，幂等）。
+
+    init_state 每帧都会重建 inference_state（窗口=1 也一样）—— 计划里点名的
+    "SAM2 初始化每帧重复"嫌疑点，实测占比由探针给出。
+    """
+    if predictor is None or getattr(predictor, "_egomed_timed_init", False):
+        return
+    orig = predictor.init_state
+
+    def _timed_init_state(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return orig(*args, **kwargs)
+        finally:
+            _TIMING_PROBE["sam2_init"] += _ms(t0)
+
+    predictor.init_state = _timed_init_state
+    predictor._egomed_timed_init = True
+
+    # reset_state（每次传播前都会清空推理状态，单列计时）
+    orig_reset = getattr(predictor, "reset_state", None)
+    if orig_reset is not None and not getattr(predictor, "_egomed_timed_reset", False):
+        def _timed_reset(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_reset(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["reset_state"] += _ms(t0)
+
+        predictor.reset_state = _timed_reset
+        predictor._egomed_timed_reset = True
+
+    # 10) SAM2 内部三段（把"加框解码"这 181ms 拆开）：
+    #     _run_single_frame_inference = mask decoder 前向；
+    #     _get_orig_video_res_output = 把 256² logits 插值回**原分辨率**（4MP 时最贵）；
+    #     _consolidate_temp_output_across_obj = 多目标合并。
+    #     注意 add_new_points_or_box 与 propagate_in_video 各调了一次
+    #     _get_orig_video_res_output —— 同一帧、同一结果，理论上可复用（待 A/B 验证）。
+    orig_run_single = getattr(predictor, "_run_single_frame_inference", None)
+    if orig_run_single is not None and not getattr(predictor, "_egomed_timed_single", False):
+        def _timed_single(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_run_single(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["decoder"] += _ms(t0)
+
+        predictor._run_single_frame_inference = _timed_single
+        predictor._egomed_timed_single = True
+
+    orig_interp = getattr(predictor, "_get_orig_video_res_output", None)
+    if orig_interp is not None and not getattr(predictor, "_egomed_timed_interp", False):
+        def _timed_interp(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_interp(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["interp"] += _ms(t0)
+
+        predictor._get_orig_video_res_output = _timed_interp
+        predictor._egomed_timed_interp = True
+
+    orig_consol = getattr(predictor, "_consolidate_temp_output_across_obj", None)
+    if orig_consol is not None and not getattr(predictor, "_egomed_timed_consol", False):
+        def _timed_consol(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_consol(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["consolidate"] += _ms(t0)
+
+        predictor._consolidate_temp_output_across_obj = _timed_consol
+        predictor._egomed_timed_consol = True
+
+    # 11) prompt encoder（把框变成 embedding 的前向）—— 加框解码里的隐藏大头
+    orig_prompt = getattr(predictor, "_get_prompt_encoder_embedding", None)
+    if orig_prompt is not None and not getattr(predictor, "_egomed_timed_prompt", False):
+        def _timed_prompt(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                return orig_prompt(*args, **kwargs)
+            finally:
+                _TIMING_PROBE["prompt"] += _ms(t0)
+
+        predictor._get_prompt_encoder_embedding = _timed_prompt
+        predictor._egomed_timed_prompt = True
+
+    # 12) torch.cuda.empty_cache()（引擎每帧末尾调一次清显存缓存 → 下次分配要重新 cudaMalloc）
+    try:
+        import torch as _torch
+        if not getattr(_torch.cuda, "_egomed_timed_empty", False):
+            _orig_empty = _torch.cuda.empty_cache
+
+            def _timed_empty_cache(*args, **kwargs):
+                t0 = time.perf_counter()
+                try:
+                    return _orig_empty(*args, **kwargs)
+                finally:
+                    _TIMING_PROBE["empty_cache"] += _ms(t0)
+
+            _torch.cuda.empty_cache = _timed_empty_cache
+            _torch.cuda._egomed_timed_empty = True
+    except Exception:  # noqa: BLE001 没 torch 就算了
+        pass
+
+
 def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) -> dict:
     demo, _, _ = _get_engine()
+    # N50：细粒度分段耗时（毫秒）。只进服务端日志（行尾 detail 段），**不进响应体**。
+    # 目的：把"infer"这个黑盒拆开，看清 500ms 到底花在哪 —— 先量后动，不靠猜。
+    timings: dict[str, int] = {}
+    _reset_timing_probe()          # N50：探针按请求重置（每会话串行，不会串味）
     target = session.target
     if not target:
+        # N48：还没设目标 → 先用帧级分类器猜一下模态（契约 §5.3 / A.10 P1.5）。
+        # ⚠️ 猜出来的**只是给医生看的提示** —— 真正决定分割模态的仍然是
+        #    「语音目标 → demo.resolve_modality」这条主链路（实测实拍屏幕帧上
+        #    分类器不可靠，见 MODALITY_MIN_CONF 上方的说明）。所以猜错不影响功能。
+        t_cls = time.perf_counter()
+        guess, _conf, _raw = _classify_modality(image_bytes)
+        timings["cls"] = _ms(t_cls)
+        stable = _update_modality_vote(session, guess)
+        if stable:
+            return {
+                **_mk_base(session_id),
+                "modality": stable, "target": "",
+                "overlay": "",
+                "message": f"看起来是{_modality_cls.short_name(stable)}，请说要看哪个器官",
+                "need_confirm": False, "candidates": [],
+                "_timings": timings,
+            }
         return {
             **_mk_base(session_id),
             "modality": "", "target": "",
             "overlay": "", "message": "请先告诉我要分割哪个器官（按住说话）",
             "need_confirm": False, "candidates": [],
+            "_timings": timings,
         }
 
     # 1. 写入滚动窗口，只保留最近 N 帧
+    t_w = time.perf_counter()
     fdir = _frame_dir(session_id)
     fdir.mkdir(parents=True, exist_ok=True)
-    session.frame_counter += 1
-    (fdir / f"{session.frame_counter:06d}.jpg").write_bytes(image_bytes)
-    _prune_window(fdir, WINDOW_SIZE)
+    # 2026-11-04（N50）：WINDOW_SIZE=1 时**不再用"递增序号 + prune"**。
+    # 实测（服务端进程内）：写盘只要 1.5ms，但 prune（glob+stat+unlink）要 **76ms/帧**，
+    # 占 A1 客户端往返的 14% —— 瓶颈是"删旧文件"这个动作，不是"写"。
+    # 改成：帧写到固定的 `cur/000001.jpg`（**覆盖写**，目录里永远只有 1 个文件
+    # → 根本不需要删）；引擎的 frame_dir 指向这个"干净目录"
+    # （SAM2 的 init_state 会 listdir 整个目录，必须保证里面只有当前帧）。
+    # 多帧窗口（WINDOW_SIZE>1）保留原逻辑。
+    if WINDOW_SIZE == 1:
+        cur_dir = fdir / "cur"
+        cur_dir.mkdir(parents=True, exist_ok=True)
+        cur_file = cur_dir / "000001.jpg"
+        cur_file.write_bytes(image_bytes)
+        frame_dir = cur_dir
+        image_files: list[Path] = [cur_file]
+        session.frame_counter += 1
+    else:
+        # 多帧窗口：进程重启后 frame_counter 从 0 重置，直接用 1 会**覆盖**上一轮
+        # 进程留下的 {counter:06d}.jpg —— 新旧帧混在一起，检测可能读到陈旧帧。
+        if session.frame_counter == 0:
+            session.frame_counter = _max_frame_counter(fdir)
+        session.frame_counter += 1
+        (fdir / f"{session.frame_counter:06d}.jpg").write_bytes(image_bytes)
+        _prune_window(fdir, WINDOW_SIZE)
+        frame_dir = fdir
+        image_files = []
+    timings["write"] = _ms(t_w)
+    # 会话目录里的历史帧（cur/ 之外）低频**后台**清理：Windows 上 unlink 慢，
+    # 放后台线程里做，不占响应时间。
+    if WINDOW_SIZE == 1 and session.frame_counter % 30 == 0:
+        threading.Thread(target=_prune_window, args=(fdir, 0), daemon=True).start()
 
     # 2. 目标 -> 模态（每个目标只属于一个模态）
     modality, name_to_gray = demo.resolve_modality(target)
@@ -744,10 +1212,15 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
             "modality": "", "target": target,
             "overlay": "", "message": f"目标「{target}」不在任何已配置模态中",
             "need_confirm": False, "candidates": [],
+            "_timings": timings,
         }
 
     # 3. 模型（demo 内部按模态缓存，进程内只加载一次）
+    #    N50：这一段是"换模态首帧"的罪魁祸首 —— 没预热过的模态要现场加载 YOLO。
+    t_m = time.perf_counter()
     predictor, yolo_model = demo._get_models(modality)
+    timings["models"] = _ms(t_m)
+    _patch_predictor_timing(predictor)   # N50：给 init_state 打计时（幂等）
     id_to_name = {
         k: v for k, v in demo.eng.load_yolo_class_names_from_model(yolo_model).items()
         if v in name_to_gray
@@ -760,6 +1233,7 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
             "modality": modality, "target": target,
             "overlay": "", "message": f"YOLO 权重中找不到目标「{target}」",
             "need_confirm": False, "candidates": [],
+            "_timings": timings,
         }
 
     # 4. 对（窗口内的）最新帧跑一次检测+分割，取结果 overlay
@@ -767,15 +1241,26 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
     #    以抑制误检，但它假设后面还有帧；首次交互只有 1 帧时会把结果全滤掉，
     #    表现为"每个会话第一帧必然返回'没检测到目标'"。这里显式传 1，让首帧即有结果。
     out_dir = STREAM_DIR / session_id / "seg"
-    image_files, _ = demo.resolve_frames(fdir, out_dir)
+    t_r = time.perf_counter()
+    if not image_files:
+        image_files, _ = demo.resolve_frames(frame_dir, out_dir)
+    timings["resolve"] = _ms(t_r)
     # N18：面积过滤阈值按模态取（默认 0.001；CT 腹部 0.0001，否则小器官会被当误检丢弃）
     min_area_ratio = MIN_AREA_RATIO_BY_MODALITY.get(modality, DEFAULT_MIN_AREA_RATIO)
+    t_s = time.perf_counter()
     result = demo._segment_target(
-        predictor, yolo_model, image_files, fdir, target_id,
+        predictor, yolo_model, image_files, frame_dir, target_id,
         id_to_name, class_id_to_gray, out_dir, target,
         min_occurrence=1,
         min_area_ratio=min_area_ratio,
     )
+    # N50：segment 段内部（YOLO 检测 / SAM2 初始化 / 传播 / 渲染）都发生在引擎里，
+    # 这一段先看总占比；占比高再上探针细分（不改引擎文件，见 _install_timing_probes）。
+    timings["segment"] = _ms(t_s)
+    # N50：探针细分（detect / SAM2 初始化 / 传播）—— 运行时注入，引擎源文件未改
+    for _k, _v in _TIMING_PROBE.items():
+        if _v:
+            timings[f"seg_{_k}"] = _v
     # P2.12：frames_processed 语义 = "该 session 累计处理帧数"。此处（真正跑过推理
     # 的路径、且已在 per-session 串行区内）自增，被 latest-wins 丢弃的帧不计数，
     # 避免并发下多个响应返回同一个"请求时刻"计数。
@@ -783,9 +1268,15 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
     if result["status"].startswith("未检测") or not result["overlay_files"]:
         return {
             **_mk_base(session_id),
-            "modality": modality, "target": target,
-            "overlay": "", "message": "画面里没检测到目标，请对准屏幕",
+            # 2026-11-04：按契约决议 #14 + 附录 A.10 P0.4 —— **未识别出目标时
+            # modality / target 一律清空**（原来这里返回"会话态"，与契约字面不符：
+            # 实测 5 张坏帧返 modality="ACDC (MRI 心脏)"、target="LV cavity"）。
+            # 客户端 HUD 对空 overlay 有防抖（保留上一帧结果），代价只是
+            # "当前模态"文字短暂为空，下一帧识别到就恢复。
+            "modality": "", "target": "",
+            "overlay": "", "message": BOUNDARY1_MESSAGE,
             "need_confirm": False, "candidates": [],
+            "_timings": timings,
         }
 
     t_enc = time.perf_counter()                       # T9：编码分段计时
@@ -804,6 +1295,7 @@ def _handle_frame_real(session_id: str, image_bytes: bytes, session: Session) ->
         "message": f"已分割 {target}",
         "need_confirm": False, "candidates": [],
         "_encode_ms": encode_ms,   # T9：仅供 post_frame 记分段日志，响应前会被弹出
+        "_timings": timings,       # N50：细粒度分段，仅供日志，响应前会被弹出
     }
 
 
@@ -1029,6 +1521,10 @@ async def post_frame(
     wait_ms = payload.pop("_wait_ms", 0)
     encode_ms = payload.pop("_encode_ms", 0)
     dropped = payload.pop("_dropped", False)
+    # N50：细粒度分段（写盘/模型加载/取帧/分割），私有字段弹掉、不进响应
+    timings = payload.pop("_timings", {}) or {}
+    # N50：把分段耗时挂到会话上，供 /healthz?session=<id> 取用（客户端 --detail 用）
+    s.last_timings = dict(timings)
     infer_ms = 0 if dropped else max(0, elapsed_ms - wait_ms - encode_ms)
     payload["elapsed_ms"] = elapsed_ms
     payload["frames_processed"] = s.frames_processed
@@ -1040,7 +1536,8 @@ async def post_frame(
     _log_frame(session_id, s.frames_processed, payload.get("modality", ""),
                payload.get("target", ""), elapsed_ms,
                "dropped" if dropped else "ok",
-               wait_ms=wait_ms, infer_ms=infer_ms, encode_ms=encode_ms)
+               wait_ms=wait_ms, infer_ms=infer_ms, encode_ms=encode_ms,
+               detail=" ".join(f"{k}={v}ms" for k, v in timings.items() if v))
 
     # 2026-11-03（议题①"请求级超时/取消"）：客户端 3s 超时后会关掉连接，服务端这边
     # **照样把这一帧算完**（latest-wins 队列长度 1，中间帧本来就不会被推理，
@@ -1163,7 +1660,7 @@ def _gpu_mem_mb():
 
 
 @app.get("/healthz")
-async def healthz():
+async def healthz(session: Optional[str] = None):
     """健康检查（联调排障用，非契约接口）。
 
     T2：增加 state（warming/ready/failed），预热期返回 **503** 供客户端显示"预热中"；
@@ -1171,6 +1668,10 @@ async def healthz():
 
     2026-11-03：预热失败时（state=failed）也返回 503 —— 原来无论成败都置 ready，
     /healthz 报 200 而引擎根本没加载，故障被推迟到第一个请求变成 500。
+
+    N50：带 ?session=<id> 时额外返回该会话**最近一帧的细粒度分段耗时**
+    （timings：写盘/模型加载/取帧/分割/编码），供 client/eval_latency.py --detail
+    出"耗时占比表"。这是运维接口扩展（契约 P2.11 白名单），**契约版本不变**。
     """
     state = _SERVER_STATE
     # 2026-11-03：暴露会话级计数（议题①的可观测部分）。
@@ -1193,6 +1694,10 @@ async def healthz():
         "dropped_frames": dropped_total,
         "client_gone": gone_total,
     }
+    if session:
+        with _SESSIONS_LOCK:
+            _s = _SESSIONS.get(session)
+        body["timings"] = dict(_s.last_timings) if _s is not None else {}
     if state == "failed":
         body["warmup_error"] = _WARMUP_ERROR
     return JSONResponse(status_code=503 if state in ("warming", "failed") else 200, content=body)
@@ -1202,7 +1707,7 @@ async def healthz():
 # 入口
 # ---------------------------------------------------------------------------
 def main() -> None:
-    global REAL_ENGINE, _SERVER_STATE
+    global REAL_ENGINE, _SERVER_STATE, _WARMUP_ACDC_ONLY
     import uvicorn
 
     parser = argparse.ArgumentParser(description="EgoMed-Agent 服务端")
@@ -1211,6 +1716,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000, help="端口（默认 8000）")
     parser.add_argument("--real", action="store_true",
                         help="启用真引擎（默认假实现）")
+    parser.add_argument("--warmup-acdc-only", action="store_true",
+                        help="只预热 ACDC 一个模态（默认预热全部 5 个：切模态不用等第一帧，"
+                             "实测全量只多花约 0.7s；仅在显存紧张时用）")
     args = parser.parse_args()
 
     # T2：提前监听 + 后台预热。预热期 /healthz 返回 503 + state=warming，
@@ -1221,6 +1729,7 @@ def main() -> None:
     # 首个 A1/A2 会撞模型冷加载（实测 >60s）。现在两种启用方式都启动预热。
     if args.real or REAL_ENGINE:
         REAL_ENGINE = True
+        _WARMUP_ACDC_ONLY = bool(args.warmup_acdc_only)
         _SERVER_STATE = "warming"
         threading.Thread(target=_warmup_real_engine, daemon=True).start()
         print("[server] 预热已在后台开始（/healthz 先返回 503 + state=warming）", flush=True)

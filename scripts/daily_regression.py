@@ -164,21 +164,35 @@ def main(argv=None) -> int:
 
     ap = argparse.ArgumentParser(description="每日自动回归（N44）")
     ap.add_argument("--quick", action="store_true", help="只跑 mock 套件（秒级）")
+    ap.add_argument("--full", action="store_true",
+                    help="跑**完整**套件（含真引擎，语义上与默认相同）—— 供每周计划任务用")
     ap.add_argument("--no-run", action="store_true", help="不跑，只汇总最近一次已有报告")
     ap.add_argument("--task-hint", action="store_true", help="打印注册计划任务的命令后退出")
+    ap.add_argument("--tidy", action="store_true",
+                    help="回归跑完顺手做产物卫生（归档 runs/ 临时产物 + 便携包只留最近 N 个）")
+    ap.add_argument("--keep-portable", type=int, default=2, metavar="N",
+                    help="配合 --tidy：便携包只保留最近 N 个（默认 2）")
     args = ap.parse_args(argv)
 
     if args.task_hint:
         bat = PROJECT_ROOT / "每日回归.bat"
-        log("注册每日定时回归（Windows 计划任务，管理员 CMD 执行一次即可）：")
+        log("注册每日定时回归（Windows 计划任务，**管理员 CMD** 执行一次即可）：")
         log("")
-        log(f'  schtasks /create /tn "EgoMed每日回归" /tr "\\"{bat}\\"" /sc daily /st 09:30')
+        log("① 每天 09:30 跑一次（秒级，mock 套件 + 产物清理）：")
+        log(f'  schtasks /create /tn "EgoMed每日回归" /tr "\\"{bat}\\" --quick --tidy" '
+            f'/sc daily /st 09:30')
+        log("")
+        log("② 每周一次完整回归（含真引擎，建议周六上午）：")
+        log(f'  schtasks /create /tn "EgoMed每周完整回归" /tr "\\"{bat}\\" --full --tidy" '
+            f'/sc weekly /d SAT /st 10:00')
         log("")
         log("  查看：  schtasks /query /tn \"EgoMed每日回归\" /v /fo LIST")
         log("  立即跑：schtasks /run    /tn \"EgoMed每日回归\"")
         log("  删除：  schtasks /delete /tn \"EgoMed每日回归\" /f")
         log("")
-        log("建议：日常用 --quick（秒级）；每周一次完整（含真引擎）。")
+        log("失败告警：跑失败会写 `runs/daily/ALERT.md` 并在 `latest.md` 顶部标红，")
+        log("          同时进程退出码非 0（计划任务会显示\"上次运行结果：失败\"）。")
+        log("注意：注册计划任务需要**管理员权限**的 CMD；注册后无需管理员也能运行。")
         return 0
 
     t0 = time.time()                 # 用于"与上次对比"的时间基准
@@ -246,6 +260,17 @@ def main(argv=None) -> int:
             f"- mock **{row['mock_pass']}/{row['mock_total']}**　"
             f"real **{row['real_pass']}/{row['real_total']}**", "",
         ]
+        # ---------- 失败告警（N50 收口新增） ----------
+        failed_now = bool(all_failed) or rc != 0 or not suites
+        if failed_now:
+            lines = [
+                "> **❌ 本次回归未通过**　"
+                + (f"失败 {len(all_failed)} 项" if all_failed else "未取到报告或进程非 0 退出")
+                + (f"（其中**新增 {len(new_failures)} 项**）" if new_failures else "")
+                + "　→ 详见 `runs/daily/ALERT.md`", "",
+            ] + lines
+        else:
+            lines = ["", ] + lines
         if prev:
             lines += ["## 与上次对比", "",
                       f"- 上次：{prev['ts']}　mock {prev['mock_pass']}/{prev['mock_total']}　"
@@ -259,6 +284,44 @@ def main(argv=None) -> int:
             lines += ["", "## 报告位置", "",
                       *[f"- {k}: `{v['dir']}`" for k, v in sorted(suites.items())]]
         (DAILY / "latest.md").write_text("\n".join(lines), encoding="utf-8")
+
+        # ---------- 失败告警文件（N50 收口） ----------
+        if failed_now:
+            alert = [
+                f"# ⚠ 回归失败告警　{row['ts']}", "",
+                f"- 判定：**{verdict}**　进程退出码 {rc}",
+                f"- mock **{row['mock_pass']}/{row['mock_total']}**　"
+                f"real **{row['real_pass']}/{row['real_total']}**　"
+                f"套件：`{row['suites']}`", "",
+            ]
+            if all_failed:
+                alert += ["## 本次失败用例", "", *[f"- `{c}`" for c in all_failed], ""]
+            if new_failures:
+                alert += ["## ⚠ 新增失败（疑似回归）", "",
+                          *[f"- `{c}`" for c in new_failures], ""]
+            if prev:
+                alert += ["## 与上次对比", "",
+                          f"- 上次：{prev['ts']}　mock {prev['mock_pass']}/{prev['mock_total']}　"
+                          f"real {prev['real_pass']}/{prev['real_total']}　{prev['verdict']}", ""]
+            alert += [f"- 完整日志：`{log_path.relative_to(PROJECT_ROOT)}`",
+                      f"- 摘要：`{(DAILY / 'latest.md').relative_to(PROJECT_ROOT)}`", ""]
+            (DAILY / "ALERT.md").write_text("\n".join(alert), encoding="utf-8")
+            log(f"  [告警] 已写 {(DAILY / 'ALERT.md').relative_to(PROJECT_ROOT)}")
+        else:
+            # 通过时清掉旧告警，避免"上次失败"被误读成"本次失败"
+            (DAILY / "ALERT.md").unlink(missing_ok=True)
+
+        # ---------- 产物卫生（N45 接入，N50 收口） ----------
+        if args.tidy:
+            tidy_cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "tidy_runs.py"),
+                        "--keep-portable", str(args.keep_portable)]
+            size_log = DAILY / "size_report.txt"
+            with size_log.open("w", encoding="utf-8") as fh:
+                proc = subprocess.run(tidy_cmd, cwd=str(PROJECT_ROOT), stdout=fh,
+                                      stderr=subprocess.STDOUT, text=True,
+                                      encoding="utf-8", errors="ignore")
+            log(f"  [产物] 清理完成（退出码 {proc.returncode}）→ "
+                f"{size_log.relative_to(PROJECT_ROOT)}")
 
         log("")
         log("=" * 74)

@@ -68,6 +68,8 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=4.0, help="视频帧率")
     ap.add_argument("--timeout", type=float, default=30.0)
     ap.add_argument("--out", default="", help="输出 mp4（默认 runs/demo/sim_glasses_<时间戳>.mp4）")
+    ap.add_argument("--auto-modality-frames", type=int, default=4, metavar="N",
+                    help="N48 演示段：先发 N 帧**未设目标**的帧，展示自动识别模态（0=不录）")
     args = ap.parse_args()
 
     import requests
@@ -98,6 +100,32 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="egomed_demo_"))
     shots = []
     try:
+        # ⓪ N48 演示段（2026-11-04 新增）：**还没说话时**服务端就自动识别模态。
+        #    展示契约 v1.0.7 §4 规则 3 的新能力：连续 3 帧一致才显示、判不出就提示先说器官。
+        #    （画布先用原图尺寸单独算一份，避免动后面主体段的变量）
+        _first = cv2.imread(str(frames[0]))
+        _h, _w = _first.shape[:2]
+        _s = min(1.0, 1280 / max(_h, _w))
+        if _s < 1.0:
+            _w, _h = int(_w * _s), int(_h * _s)
+        _hud = lc.Hud()
+        for _i in range(args.auto_modality_frames):
+            _fp = frames[_i % len(frames)]
+            _jpg = mc.compress_image(_fp)
+            _pl, _ms, _err = mc.post_frame(args.url, sid, _jpg, f"auto_{_i:03d}.jpg", args.timeout)
+            if _err:
+                log(f"  [N48] 帧 {_i}: 请求失败 {_err}")
+                continue
+            _mod = _pl.get("modality") or "-"
+            _msg = _pl.get("message") or ""
+            shots.append(_hud.draw(_first.copy(), [
+                f"还没说话　第 {_i + 1}/{args.auto_modality_frames} 帧　{_ms:.0f} ms",
+                f"自动识别模态：{_mod}",
+                _msg,
+                "（连续 3 帧一致才显示；判不出就提示先说器官）",
+            ]))
+            log(f"  [N48] 帧 {_i}: modality={_mod!r}（{_ms:.0f}ms）")
+
         # ① A2 设目标
         wav = Path(args.wav)
         payload, ms, err = mc.post_audio(args.url, sid, wav.read_bytes(), wav.name, args.timeout)
