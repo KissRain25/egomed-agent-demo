@@ -230,20 +230,20 @@ def build_panel(acc, lat, seg, n48, meta) -> list[str]:
     L.append("")
     L.append(" 【二】分割精度（ACDC 4 病例 x 8 帧）")
     if seg:
-        on = seg.get("online") or {}
-        off = seg.get("offline") or {}
-        if on:
-            L.append(f"   在线 Dice 均值 **{on.get('dice_mean', 0):.4f}**"
-                     f"（检出 {on.get('hits')}/{on.get('frames')}）　"
-                     f"延迟均值 {ms(on.get('latency_mean_ms'))}　P95 {ms(on.get('latency_p95_ms'))}")
-        if off:
-            L.append(f"   离线 Dice 均值 {off.get('dice_mean', 0):.4f}"
-                     f"（检出 {off.get('hits')}/{off.get('frames')}）")
+        for c in seg.get("cases", []):
+            L.append(f"   病例 {c['case']:>3s}   在线 Dice {c['dice']:.4f}"
+                     f"（检出 {c['hits']}/{c['frames']}）　"
+                     f"延迟均值 {ms(c.get('lat_mean'))}　P95 {ms(c.get('lat_p95'))}")
+        if seg.get("online_mean") is not None:
+            L.append(f"   在线 Dice 均值 **{seg['online_mean']:.4f}**"
+                     f"（{len(seg.get('cases', []))} 病例）")
+        if seg.get("offline_mean") is not None:
+            L.append(f"   离线 Dice 均值 {seg['offline_mean']:.4f}")
         base = meta.get("baseline_online_dice")
-        if on and base:
-            d = on.get("dice_mean", 0) - base
-            L.append(f"   与基线对比：在线 {base:.4f} -> {on.get('dice_mean', 0):.4f}"
-                     f"（差值 {d:+.4f}{'，零退化' if abs(d) < 1e-9 else ''}）")
+        if seg.get("online_mean") is not None and base:
+            d = seg["online_mean"] - base
+            L.append(f"   与基线对比：在线 {base:.4f} -> {seg['online_mean']:.4f}"
+                     f"（差值 {d:+.4f}{'，零退化' if abs(d) < 1e-3 else ''}）")
     else:
         L.append("   （本次没拿到数据，或用了 --quick 跳过）")
 
@@ -252,7 +252,7 @@ def build_panel(acc, lat, seg, n48, meta) -> list[str]:
     if acc:
         L.append(f"   通过 **{acc.get('passed', 0)}/{acc.get('total', 0)}**"
                  + ("　全部通过" if acc.get("passed") == acc.get("total") else "　有失败项，见 report.json"))
-        for c in [x for x in acc.get("cases", []) if not x.get("passed")][:5]:
+        for c in [x for x in acc.get("cases", []) if not x.get("pass")][:5]:
             L.append(f"   X {c.get('case') or c.get('name')}：{str(c.get('detail'))[:70]}")
     else:
         L.append("   （本次没拿到数据）")
@@ -282,7 +282,8 @@ def main(argv=None) -> int:
     ap.add_argument("--keep-server", action="store_true", help="跑完不关服务端")
     ap.add_argument("--no-panel", action="store_true", help="只跑不打印面板")
     ap.add_argument("--frames", type=int, default=12, help="每模态发帧数（延迟评测）")
-    ap.add_argument("--cases", type=int, default=4, help="精度评测病例数")
+    ap.add_argument("--cases", default="1 10 11 12",
+                    help="精度评测的病例列表（空格分隔；ACDC 用 1 10 11 12，与基线同口径）")
     args = ap.parse_args(argv)
 
     now = datetime.now()
@@ -315,9 +316,11 @@ def main(argv=None) -> int:
             acc_dir = latest_dir(RUNS / "acceptance")
             if acc_dir:
                 rep = read_json(acc_dir / "report.json") or {}
-                cases = rep.get("cases") or []
-                acc = {"passed": sum(1 for c in cases if c.get("passed")),
-                       "total": len(cases), "cases": cases, "dir": str(acc_dir)}
+                # acceptance_test 的 report.json 结构：{"head": {...}, "items": [{case,name,pass,detail}]}
+                items = rep.get("items") or []
+                acc = {"passed": sum(1 for c in items if c.get("pass")),
+                       "total": len(items), "cases": items,
+                       "head": rep.get("head") or {}, "dir": str(acc_dir)}
 
             run_step("latency", [PY, str(CLIENT / "eval_latency.py"),
                                  "--frames", str(args.frames), "--url", url,
@@ -327,17 +330,37 @@ def main(argv=None) -> int:
                 lat = read_json(lat_dir / "result.json")
 
             if not args.quick:
-                run_step("segmentation", [PY, str(CLIENT / "eval_segmentation.py"),
-                                          "--modality", "ACDC (MRI 心脏)",
-                                          "--case", str(args.cases), "--frames", "8",
-                                          "--mode", "both", "--url", url], out_dir)
-                seg_dir = latest_dir(RUNS / "metrics")
-                if seg_dir:
-                    for cand in sorted(seg_dir.iterdir(), key=lambda d: d.name, reverse=True):
-                        j = read_json(cand / "result.json")
-                        if j and ("online" in j or "offline" in j):
-                            seg = j
+                # 精度：eval_segmentation 一次只跑**一个病例**（--case 是病例目录名，不是病例数）
+                # → 这里按病例列表逐个跑，再汇总（病例 1/10/11/12 与基线同口径）
+                seg_cases = []
+                for case in str(args.cases).split():
+                    run_step(f"segmentation_{case}", [PY, str(CLIENT / "eval_segmentation.py"),
+                                                     "--modality", "ACDC (MRI 心脏)",
+                                                     "--case", case, "--frames", "8", "--auto-start",
+                                                     "--mode", "both", "--url", url], out_dir)
+                    # 产物：runs/metrics/<时间戳>/result.json（同层文件，不是子目录）
+                    j = None
+                    for j_path in sorted(RUNS.glob("metrics/*/result.json"),
+                                         key=lambda p: p.parent.name, reverse=True):
+                        jj = read_json(j_path)
+                        if jj and ("online" in jj or "offline" in jj):
+                            j = jj
                             break
+                    if j:
+                        on = j.get("online") or {}
+                        off = j.get("offline") or {}
+                        seg_cases.append({
+                            "case": case, "dice": on.get("dice_mean"),
+                            "hits": on.get("hits"), "frames": on.get("frames"),
+                            "lat_mean": on.get("latency_mean_ms"),
+                            "lat_p95": on.get("latency_p95_ms"),
+                            "off_dice": off.get("dice_mean"),
+                            "off_hits": off.get("hits"), "off_frames": off.get("frames")})
+                dices = [c["dice"] for c in seg_cases if c.get("dice") is not None]
+                offs = [c["off_dice"] for c in seg_cases if c.get("off_dice") is not None]
+                seg = {"cases": seg_cases,
+                       "online_mean": (sum(dices) / len(dices)) if dices else None,
+                       "offline_mean": (sum(offs) / len(offs)) if offs else None}
 
             n48 = n48_demo(url)
     finally:
