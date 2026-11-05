@@ -42,10 +42,12 @@ import argparse
 import base64
 import io
 import json
+import os
 import random
 import re
 import string
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -121,6 +123,62 @@ def compress_image(path: Path, max_side: int = MAX_SIDE, quality: int = JPEG_QUA
 
 
 # ---------------------------------------------------------------- HTTP
+# 连接复用（keep-alive）
+# ---------------------
+# 原来每次 requests.post() 都新建一条 TCP 连接、请求完就关 → 每帧一次三次握手
+# （局域网 1~3 ms，弱 WiFi 可到 10~20 ms），并堆积大量 TIME_WAIT。
+# 现改为进程内复用一个 requests.Session，把连接留给下一帧。
+#
+# 两个必须处理的坑：
+#   ① **陈旧连接**：keep-alive 的连接可能已被服务端关掉（空闲超时 / 服务端重启），
+#      直接复用会抛 RemoteDisconnected。故给 HTTPAdapter 配
+#      Retry(connect=1, read=0)：只对**连接层**失败重试一次，**读超时不重试** ——
+#      超时语义必须原样保留，否则 is_waitable() 的「超时算可等」判断会被打乱。
+#   ② **线程安全**：live_client 里 FramePump 后台线程发帧、主线程发语音，共享同一
+#      Session。urllib3 连接池本身线程安全；我们不在 Session 上挂 cookies/headers，
+#      不会踩 Session 的可变状态。
+#
+# A/B 开关：环境变量 EGOMED_NO_KEEPALIVE=1 → 退回「每请求新建连接」的旧行为，
+# 便于用同一份代码实测连接复用究竟省了多少。
+_SESSION_LOCK = threading.Lock()
+_SESSION: requests.Session | None = None
+
+
+def _keepalive_enabled() -> bool:
+    return os.environ.get("EGOMED_NO_KEEPALIVE", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+
+
+def _http() -> requests.Session:
+    """取进程内复用的 HTTP 会话（懒加载）。"""
+    global _SESSION
+    if _SESSION is None:
+        with _SESSION_LOCK:
+            if _SESSION is None:
+                from requests.adapters import HTTPAdapter
+                from urllib3.util.retry import Retry
+
+                sess = requests.Session()
+                retry = Retry(total=1, connect=1, read=0, status=0,
+                              allowed_methods=None, raise_on_status=False)
+                adapter = HTTPAdapter(pool_connections=8, pool_maxsize=16, max_retries=retry)
+                sess.mount("http://", adapter)
+                sess.mount("https://", adapter)
+                _SESSION = sess
+    return _SESSION
+
+
+def close_http() -> None:
+    """关闭复用会话，释放连接池（进程退出或测试收尾时调用）。"""
+    global _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is not None:
+            try:
+                _SESSION.close()
+            finally:
+                _SESSION = None
+
+
 def post_multipart(url: str, path: str, session_id: str, field: str,
                    filename: str, content: bytes, content_type: str,
                    timeout: float = TIMEOUT):
@@ -137,7 +195,11 @@ def post_multipart(url: str, path: str, session_id: str, field: str,
     files = {field: (filename, content, content_type)}
     t0 = time.perf_counter()
     try:
-        resp = requests.post(api, data=data, files=files, timeout=timeout)
+        # 复用连接（keep-alive）：省掉每帧一次 TCP 握手；EGOMED_NO_KEEPALIVE=1 可退回旧行为
+        if _keepalive_enabled():
+            resp = _http().post(api, data=data, files=files, timeout=timeout)
+        else:
+            resp = requests.post(api, data=data, files=files, timeout=timeout)
     except requests.exceptions.Timeout:
         return None, (time.perf_counter() - t0) * 1000, f"超时（>{timeout:g}s）"
     except requests.exceptions.ConnectionError:

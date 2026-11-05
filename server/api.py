@@ -1458,7 +1458,12 @@ def handle_audio(session_id: str, audio_bytes: bytes, session: Session) -> dict:
 # ---------------------------------------------------------------------------
 # FastAPI 应用
 # ---------------------------------------------------------------------------
-app = FastAPI(title="EgoMed-Agent Server", version="1.0.4")
+# 契约版本常量（唯一来源）：必须与 docs/API_CONTRACT.md 的「版本」行一致。
+# 2026-11-05：此处曾长期停在 1.0.4，而文档已到 v1.0.7 —— 典型漏同步（11-03 修过一次同类问题）。
+# 现由 client/test_server_contract.py 的 K13 护栏盯着：再漏同步，一键回归直接失败。
+CONTRACT_VERSION = "1.0.7"
+
+app = FastAPI(title="EgoMed-Agent Server", version=CONTRACT_VERSION)
 
 
 @app.post(FRAME_ENDPOINT)
@@ -1693,6 +1698,8 @@ async def healthz(session: Optional[str] = None):
         "gpu_mem_mb": _gpu_mem_mb(),
         "dropped_frames": dropped_total,
         "client_gone": gone_total,
+        # 契约版本（运维可见，供 K13 护栏比对 docs/API_CONTRACT.md，非契约字段）
+        "contract_version": CONTRACT_VERSION,
     }
     if session:
         with _SESSIONS_LOCK:

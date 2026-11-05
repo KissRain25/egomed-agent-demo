@@ -55,6 +55,14 @@ def pct(vals, p: float) -> float:
     return s[min(len(s) - 1, int(round(p / 100.0 * (len(s) - 1))))]
 
 
+def _rel(p: Path) -> str:
+    """按项目根显示相对路径；指向项目外则原样返回（--out 可以指到任意目录）。"""
+    try:
+        return str(Path(p).resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(p)
+
+
 def _fetch_timings(url: str, session_id: str) -> dict:
     """取服务端该会话**最近一帧的细粒度分段耗时**（N50）。
 
@@ -192,7 +200,10 @@ def main() -> int:
                 f"（min {r['min']:.0f} / max {r['max']:.0f}）")
     log("=" * 78)
 
-    out_dir = Path(args.out) if args.out else METRICS_DIR / f"latency_{datetime.now():%Y%m%d_%H%M%S}"
+    # --out 传相对路径时必须先 resolve：否则收尾打印 relative_to(PROJECT_ROOT) 会抛
+    # ValueError（2026-11-05 实测踩到：相对路径 → 报告已落盘但进程崩在最后一行日志）
+    out_dir = (Path(args.out).resolve() if args.out
+               else METRICS_DIR / f"latency_{datetime.now():%Y%m%d_%H%M%S}")
     out_dir.mkdir(parents=True, exist_ok=True)
     ok = [r for r in results if not r.get("error")]
     lines = ["# 端到端延迟统计（按模态 · N8-2）", "",
@@ -272,8 +283,8 @@ def main() -> int:
             payload["segments"] = _agg_timings([d for r in ok for d in (r.get("details") or [])])
     (out_dir / "result.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    log(f"报告：{(out_dir / 'report.md').relative_to(PROJECT_ROOT)}"
-        f"　结构化：{(out_dir / 'result.json').relative_to(PROJECT_ROOT)}")
+    log(f"报告：{_rel(out_dir / 'report.md')}"
+        f"　结构化：{_rel(out_dir / 'result.json')}")
     return 0
 
 

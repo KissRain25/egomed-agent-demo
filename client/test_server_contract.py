@@ -28,6 +28,8 @@
     K10 A2 正常（假实现）      → 200 + A2 字段齐全
     K11 /healthz               → 200 + state / real_engine 存在
     K12 未知路径               → 404
+    K13 契约版本一致           → /healthz.contract_version == docs/API_CONTRACT.md 的版本
+                                 （2026-11-05 新增：防「文档升了、服务端常量没升」的漏同步）
 
 用法
     python client/test_server_contract.py                              # 自己起服，跑完关掉
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -277,6 +280,22 @@ def run_checks(url: str, ck: Checker) -> None:
                f"HTTP {r.status_code}（期望 404）", ms)
     except Exception as exc:
         ck.add("K12", "未知路径 404", False, f"请求失败：{exc}")
+
+    # K13 契约版本一致性（2026-11-05 新增）
+    # 起因：server/api.py 的 FastAPI(version=...) 长期停在 1.0.4，而契约文档已到 v1.0.7。
+    # 这类"漏同步"不改任何行为，但会让 /docs 与排查信息失真，且历史上已犯过一次
+    # （v1.0.3 → v1.0.4）。这里把「文档版本 == 服务端常量」固化成断言。
+    try:
+        md = (PROJECT_ROOT / "docs" / "API_CONTRACT.md").read_text(encoding="utf-8")
+        m = re.search(r"版本[：:]\s*v?(\d+\.\d+\.\d+)", md)
+        doc_ver = m.group(1) if m else None
+        r = requests.get(f"{url.rstrip('/')}/healthz", timeout=5)
+        srv_ver = (r.json() or {}).get("contract_version") if r.status_code == 200 else None
+        ck.add("K13", "契约版本与文档一致",
+               bool(doc_ver) and doc_ver == srv_ver,
+               f"文档=v{doc_ver}　服务端=v{srv_ver}")
+    except Exception as exc:
+        ck.add("K13", "契约版本与文档一致", False, f"检查失败：{exc}")
 
 
 # ---------------------------------------------------------------- 起服
