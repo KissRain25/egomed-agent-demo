@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +67,10 @@ def classify(marks: dict[str, list[str]]) -> dict[str, list[str]]:
 
 
 def main() -> int:
+    try:  # Windows 控制台默认 GBK，输出 ☑/✅ 会 UnicodeEncodeError
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--md", action="store_true", help="输出 Markdown 表格")
     ap.add_argument("--list", action="store_true", help="列出进行中/未开始编号")
