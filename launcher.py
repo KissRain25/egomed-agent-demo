@@ -175,6 +175,44 @@ def find_python() -> str | None:
     return None
 
 
+def py_for_script() -> str | None:
+    """调 `.py` 子脚本时该用哪个解释器。
+
+    源码模式下 `sys.executable` 就是当前解释器，直接用它（与旧版行为一致）；
+    **exe 模式下 `sys.executable` 是 exe 自己**，拿它去调 .py 等于把脚本路径
+    当成子命令再喂回 argparse —— 2026-11-05 实测就是这么炸的：
+
+        egomed: error: argument cmd: invalid choice:
+        'D:\\\\EgoMed-Agent\\\\client\\\\live_console.py'
+
+    表现是双击 exe 后窗口一闪就退（GUI 版无控制台，连报错都看不见，退出码 2）。
+    所以 exe 模式必须走 `find_python()`，找不到就明确报 E3001，不再静默崩。
+    """
+    if not IS_FROZEN:
+        return sys.executable
+    return find_python()
+
+
+def run_script(target: Path, rest, cwd: Path | None = None, banner: str = "") -> int:
+    """用「正确的解释器」跑一个 .py 子脚本（exe 模式的关键适配点）。"""
+    py = py_for_script()
+    if py is None:
+        log("[!!]", "E3001 找不到可用 Python 解释器 —— 开界面/自检/诊断包不需要它，"
+                    "但跑脚本（控制台、演示、校准、回归）需要 egomed 环境")
+        log("     ", "解决：先跑「安装环境.bat」，或设置环境变量 EGOMED_PY")
+        return RC_ENV
+    if banner:
+        log("[--]", banner)
+    # GUI 版 exe（PyInstaller runw）自己没有控制台，子进程 python.exe 却会新建一个黑框 ——
+    # 双击后先闪个黑窗口很难看，所以显式 CREATE_NO_WINDOW。
+    # 判据用 sys.stdout is None：windowed 版才为 None，console 版/源码模式都保留控制台。
+    flags = 0
+    if IS_FROZEN and sys.stdout is None:
+        flags = 0x08000000          # CREATE_NO_WINDOW
+    return subprocess.call([py, str(target)] + list(rest),
+                           cwd=str(cwd) if cwd else None, creationflags=flags)
+
+
 def load_config(root: Path) -> tuple[dict, str]:
     """读配置：命令行 > 环境变量(EGOMED_*) > `config.toml` > 内置默认值。
 
@@ -315,8 +353,7 @@ def cmd_console(args) -> int:
     if not target.exists():
         log("[!!]", f"找不到控制台：{target}")
         return RC_ENV
-    log("[--]", f"启动控制台：{target}")
-    return subprocess.call([sys.executable, str(target)] + list(args.rest))
+    return run_script(target, args.rest, banner=f"启动控制台：{target}")
 
 
 def cmd_calibrate(args) -> int:
@@ -326,7 +363,7 @@ def cmd_calibrate(args) -> int:
     if not target.exists():
         log("[!!]", f"找不到校准工具：{target}")
         return RC_ENV
-    return subprocess.call([sys.executable, str(target)] + list(args.rest))
+    return run_script(target, args.rest)
 
 
 def cmd_diag(args) -> int:
@@ -337,7 +374,7 @@ def cmd_diag(args) -> int:
         log("[!!]", f"找不到诊断工具：{target}")
         return RC_ENV
     log("[--]", "生成诊断包…")
-    rc = subprocess.call([sys.executable, str(target)] + list(args.rest))
+    rc = run_script(target, args.rest)
     # 增量 4：此处把 VERSION / CONTRACT_VERSION / 环境信息写进诊断包清单
     return rc
 
@@ -352,8 +389,7 @@ def forward_script(rel_path: str, args, cwd: Path | None = None) -> int:
     if not target.exists():
         log("[!!]", f"E3002 找不到脚本：{target}")
         return RC_ENV
-    return subprocess.call([sys.executable, str(target)] + list(args.rest),
-                           cwd=str(cwd or root))
+    return run_script(target, args.rest, cwd=cwd or root)
 
 
 def cmd_sim(args) -> int:
@@ -411,7 +447,7 @@ def cmd_demo(args) -> int:
 
     if server_healthy(url):
         log("[--]", f"服务端已在运行（{url}），跳过启动，直接开控制台")
-        return subprocess.call([sys.executable, str(console)], cwd=str(root))
+        return run_script(console, [], cwd=root)
 
     try:
         lsg = load_launch_helper(root)
@@ -435,7 +471,7 @@ def cmd_demo(args) -> int:
             log("     ", "服务端日志：runs/launch/")
             return RC_CONN
         log("[OK]", "服务端已就绪，打开现场控制台（关闭窗口即结束并关闭服务端）")
-        return subprocess.call([sys.executable, str(console)], cwd=str(root))
+        return run_script(console, [], cwd=root)
     except KeyboardInterrupt:
         log("[--]", "用户中断")
         return RC_CANCELLED

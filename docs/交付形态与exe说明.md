@@ -64,6 +64,42 @@ python scripts/build_exe.py --clean         # 先删旧产物再打
 
 > 这两条都是**环境布局问题，不是代码问题** —— 换一台机器打包如果又出现 tkinter 起不来，先查这两条。
 
+## 四之二、运行时坑：exe 双击「一闪就退」（2026-11-05 定位并修复）
+
+**现象**：双击 `egomed.exe` 什么都不发生。而 `--version` 正常（退出码 0）、`doctor` 也全通过 ——
+**唯独界面起不来**。GUI 版 exe 用 `runw.exe` bootloader **没有控制台，报错直接消失**，只能看到进程退出码 2。
+
+**定位**：换成带控制台的构建（`build_exe.py --console`）跑一次，真因立刻现形：
+
+```
+egomed: error: argument cmd: invalid choice: 'D:\EgoMed-Agent\client\live_console.py'
+```
+
+根因是 `launcher.py` 里转发子脚本的 6 处写成 `subprocess.call([sys.executable, <脚本>, ...])`，
+而**exe 模式下 `sys.executable` 指向 exe 自己** → 实际执行的是 `egomed.exe client/live_console.py`，
+脚本路径被当成子命令喂回 argparse，报 invalid choice 后退出。
+
+受影响：`console` / `demo` / `sim` / `diag` / `calibrate` / `regress` / `soak` / `check`（凡转发 .py 的全中招）；
+`doctor` 不起子进程，所以完全没暴露。
+
+**修法**：新增 `py_for_script()` 与 `run_script()` ——
+源码模式仍用 `sys.executable`（行为与改前逐行一致），exe 模式改走 `find_python()`；
+真找不到解释器时明确报 **E3001**（"开界面/自检/诊断包不需要 Python，跑脚本需要 egomed 环境"），不再静默崩。
+顺带给子进程加 `CREATE_NO_WINDOW`：`runw` 版父进程无控制台时，子进程 python 会弹一个黑框，双击体验很差。
+
+**实测（2026-11-05 19:25，重新打包后）**
+
+| 项 | 结果 |
+|---|---|
+| `egomed.exe --version` | 退出码 0 |
+| `egomed.exe doctor` | 退出码 0（自检全部通过） |
+| 双击 `egomed.exe` | **12 秒**内弹出「EgoMed-Agent 现场控制台（N26） v0.2.4」窗口，中途无黑框 |
+| 源码模式 `python launcher.py doctor` | 全部通过（行为与改前一致） |
+
+> **教训**：`--version` / `doctor` 通过 ≠ exe 能用。这两条恰好都不走"转发子脚本"的路径，
+> 会给出**假阳性**（11-04 那句"GUI 进程双击启动存活正常"就是这么误判的）。
+> 验收 exe 至少要有两条：**双击能起 GUI**、**至少一个转发型子命令能跑**（`console` / `diag`）。
+
 ## 五、exe 模式下 `launcher.py` 改了什么（3 处适配）
 
 | 位置 | 源码模式 | exe 模式（`sys.frozen`） |
