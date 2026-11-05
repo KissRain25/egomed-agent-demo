@@ -110,7 +110,7 @@ SAM2_CHECKPOINT = f"{REPO_ROOT}/checkpoints/sam2.1_hiera_base_plus.pt"
 SAM2_MODEL_CFG = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
 RUN_ROOT = (
-    Path(f"{REPO_ROOT}/runs/eval_yolo26_original_sam2_video_schedule_reset_retrack_correction")
+    Path(os.environ.get("EGOMED_EVAL_RUN_ROOT") or f"{REPO_ROOT}/runs/eval_yolo26_original_sam2_video_schedule_reset_retrack_correction")
     / "egomed5_yolo26m_original_sam2_online_schedule_reset_retrack_iou06"
 )
 
@@ -141,7 +141,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # OVERWRITE_PRED_MASK=True 表示评测前清空该数据集的 pred_mask —— 若宿主删除保护再触发，
 # 请先分批手动清理（每次 ≤300 个文件）再跑；SAVE_OVERLAY=True 恢复落盘可视化叠加图。
 OVERWRITE_PRED_MASK = True
-SAVE_OVERLAY = True
+SAVE_OVERLAY = os.environ.get("EGOMED_SAVE_OVERLAY", "1") != "0"  # EGOMED_SAVE_OVERLAY=0 可关闭（补跑省磁盘，Dice 不受影响）
 
 # Overlay colors:
 #   red semi-transparent = predicted mask
