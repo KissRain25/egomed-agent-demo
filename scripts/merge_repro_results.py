@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import pathlib
 import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUN_ROOT = (ROOT / "runs" / "eval_yolo26_original_sam2_video_schedule_reset_retrack_correction"
+# 默认用主评测目录；EGOMED_MERGE_RUN_ROOT 可指向补跑目录（如 Amos 扩样后的 runs/amos45b_20261105）。
+# 补跑目录只含部分数据集时，其余数据集自动回退到 DEFAULT_ROOT。
+DEFAULT_ROOT = (ROOT / "runs" / "eval_yolo26_original_sam2_video_schedule_reset_retrack_correction"
+                / "egomed5_yolo26m_original_sam2_online_schedule_reset_retrack_iou06")
+RUN_ROOT = (pathlib.Path(os.environ.get("EGOMED_MERGE_RUN_ROOT")
+                         or ROOT / "runs" / "eval_yolo26_original_sam2_video_schedule_reset_retrack_correction")
             / "egomed5_yolo26m_original_sam2_online_schedule_reset_retrack_iou06")
 ORDER = ["ACDC", "Montgomery-County-CXR-Set", "CAMUS", "PolypGen2021_MultiCenterData_v3", "Amos"]
 
@@ -46,11 +52,15 @@ PAPER_AVG_12 = 71.34
 
 
 def read_summary(ds: str) -> list[dict]:
-    p = RUN_ROOT / ds / "class_summary.csv"
-    if not p.exists():
-        return []
-    with p.open(encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+    """读某数据集的 class_summary；补跑目录里没有该集时回退到主评测目录。"""
+    for root in (RUN_ROOT, DEFAULT_ROOT):
+        p = root / ds / "class_summary.csv"
+        if p.exists():
+            if root is not RUN_ROOT:
+                print(f"[回退] {ds} 不在补跑目录，使用主评测目录")
+            with p.open(encoding="utf-8") as fh:
+                return list(csv.DictReader(fh))
+    return []
 
 
 def main() -> int:
@@ -137,8 +147,8 @@ def main() -> int:
         lines += [
             "",
             "**差距分布（一句话）**：ACDC 三行几乎逐位重合（≤0.23pp）→ 评测口径已对齐；其余差距按大小依次为 "
-            "X 光 −23.0pp > 息肉 −14.5pp > CAMUS LA −12.9pp > Amos −12.0pp，**归因均未查到底**"
-            "（X 光优先，见 `docs/复现报告.md` §7 第 1b 项）。",
+            "X 光 −23.0pp > 息肉 −14.5pp > CAMUS LA −12.9pp > Amos −6.1pp（Amos 已由 24 例扩到 45 例，差距收窄一半），"
+            "**X 光为唯一超 10pp 且唯一未归因项**（见 `docs/复现报告.md` §7 第 1b 项）。",
         ]
         md.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print("\n已写出：\n  %s\n  %s" % (out_csv.relative_to(ROOT), md.relative_to(ROOT)))
